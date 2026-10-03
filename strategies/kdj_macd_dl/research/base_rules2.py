@@ -1,7 +1,7 @@
 import numpy as np, pandas as pd
 from harness import baseline_rows, data, evaluate, show
 from base_rules import state_machine
-from stocklab.indicators import macd, tw_kd
+from stocklab.indicators import macd, tw_kdj as tw_kd
 
 def rules(df):
     out = {}

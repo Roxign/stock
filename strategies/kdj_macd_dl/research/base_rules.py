@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from harness import baseline_rows, data, evaluate, show
-from stocklab.indicators import macd, tw_kd
+from stocklab.indicators import macd, tw_kdj as tw_kd
 
 
 def ind(df):

@@ -10,6 +10,13 @@ Contract for each entry in STRATEGIES:
               DataFrame columns: open, high, low, close, volume (adjusted, daily, DatetimeIndex)
               Series value at bar t = target exposure in [0, 1] decided using data up to bar t's close only.
               The engine trades the change at bar t+1's open. Prefer discrete values (0 / 0.5 / 1).
+  weights     optional fn(data) -> dict[code, Series]: target weight of TOTAL portfolio equity per stock (sum <= 1,
+              rest is cash) for the single-account portfolio scoreboard. Cross-sectional strategies (rank/select among
+              the 50) should provide it; without it, positions get equal capital slots (weight = exposure / 50).
+
+Any data used besides `data` (e.g. stocklab.external) must be cut at the last date present in `data`, so the
+truncation lookahead check (stocklab.runner.check_lookahead) also truncates it. Log every configuration you try with
+stocklab.trials.log_trial.
 """
 
 import pandas as pd

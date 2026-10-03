@@ -8,7 +8,7 @@ from .universe import CODES
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw"
-START = "2010-01-01"
+START = "2008-01-01"  # two years before the 2010 evaluation start, so 240-day indicators are warm
 COLS = ["open", "high", "low", "close", "volume"]
 
 

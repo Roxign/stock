@@ -9,7 +9,7 @@ from . import backtest as bt
 from .data import ROOT
 
 POS_CACHE = ROOT / "data" / "positions"
-FAMILY_ORDER = ["kd_macd_rule", "kd_macd_dl", "trend", "mean_reversion"]
+FAMILY_ORDER = ["kdj_macd_rule", "kdj_macd_dl", "trend", "mean_reversion"]
 BASELINES = [
     {"id": "buy_hold", "label": "買進持有", "family": "基準", "description": "期初一次全部買進，持有到期末，不做任何操作。", "multicharts": None},
     {"id": "dca", "label": "定期定額", "family": "基準", "description": "把本金平均分成每月一份，於每月第一個交易日開盤買進，持有到期末。另計算資金加權報酬率 (XIRR)。", "multicharts": None},
@@ -60,22 +60,27 @@ def validate(sid, pos, data):
 
 
 def check_lookahead(strategy, data, cuts=("2014-06-30", "2018-03-30", "2022-09-30"), tol=0.01):
-    """Recompute positions on data truncated at each cut date; any change before the cut means future data leaked in."""
-    full = strategy["positions"](data)
+    """Recompute positions (and portfolio weights, if provided) on data truncated at each cut date;
+    any change before the cut means future data leaked in."""
     ok = True
-    for cut in cuts:
-        cut = pd.Timestamp(cut)
-        part = strategy["positions"]({c: df.loc[:cut] for c, df in data.items() if df.index[0] < cut})
-        diffs, total = 0, 0
-        for code, p in part.items():
-            a = full[code].reindex(data[code].index).loc[:cut].fillna(0)
-            b = p.reindex(a.index).fillna(0)
-            diffs += int((a - b).abs().gt(1e-6).sum())
-            total += len(a)
-        frac = diffs / max(total, 1)
-        status = "OK" if frac <= tol else "LEAK?"
-        ok &= frac <= tol
-        print(f"  lookahead {strategy['id']} cut={cut.date()}: {diffs}/{total} bars differ ({frac:.3%}) {status}")
+    for key in ("positions", "weights"):
+        fn = strategy.get(key)
+        if fn is None:
+            continue
+        full = fn(data)
+        for cut in cuts:
+            cut = pd.Timestamp(cut)
+            part = fn({c: df.loc[:cut] for c, df in data.items() if df.index[0] < cut})
+            diffs, total = 0, 0
+            for code, p in part.items():
+                a = full[code].reindex(data[code].index).loc[:cut].fillna(0)
+                b = p.reindex(a.index).fillna(0)
+                diffs += int((a - b).abs().gt(1e-6).sum())
+                total += len(a)
+            frac = diffs / max(total, 1)
+            status = "OK" if frac <= tol else "LEAK?"
+            ok &= frac <= tol
+            print(f"  lookahead {strategy['id']}/{key} cut={cut.date()}: {diffs}/{total} bars differ ({frac:.3%}) {status}")
     return ok
 
 
@@ -126,3 +131,35 @@ def print_leaderboard(df):
         for _, r in g.sort_values("cagr_med", ascending=False).iterrows():
             print(f"{r['id']:<28}{r['n']:>3} {pct(r['cagr_med']):>8} {pct(r['cagr_mean']):>8} {pct(r['mdd_med']):>8} {num(r['sharpe_med']):>6} "
                   f"{pct(r['exposure_med']):>7} {num(r['orders_med']):>6} {num(r['trades_med']):>6} {pct(r['win_med']):>7} {pct(r['beat_bh']):>7} {pct(r['beat_bh_sharpe']):>8} {pct(r['beat_dca']):>7}")
+
+
+def portfolio_results(strategies, data, periods, use_cache=True):
+    """results[period][id] for the 0050 / equal-weight benchmarks and every strategy run as one 50-stock account.
+    A strategy may provide 'weights' (cross-sectional target weights of total equity); otherwise its per-stock
+    positions get equal capital slots."""
+    from . import portfolio as pf
+
+    out = {}
+    for p in periods:
+        out[p] = pf.benchmarks(data, p)
+        for s in strategies:
+            if s.get("weights"):
+                w = s["weights"](data)
+            else:
+                w = pf.per_stock_weights(compute_positions(s, data, use_cache), data)
+            out[p][s["id"]] = pf.run(data, w, p)
+    return out
+
+
+def print_portfolio(results):
+    from .portfolio import BENCH_LABELS
+
+    pct = lambda x: "" if x is None or pd.isna(x) else f"{x:6.1%}"
+    for p, rows in results.items():
+        print(f"\n=== 投資組合（50 檔同一帳戶，可持現金）{bt.PERIOD_LABELS[p]} ===")
+        print(f"{'策略':<28} {'CAGR':>7} {'MDD':>7} {'Sharpe':>6} {'平均持股':>7} {'年換手':>7}")
+        live = [(k, r) for k, r in rows.items() if r]
+        for k, r in sorted(live, key=lambda kv: -kv[1]["metrics"]["cagr"]):
+            m = r["metrics"]
+            name = BENCH_LABELS.get(k, k)
+            print(f"{name:<28} {pct(m['cagr']):>7} {pct(m['mdd']):>7} {m['sharpe']:6.2f} {pct(m.get('exposure')):>7} {pct(m.get('turnover')):>7}")

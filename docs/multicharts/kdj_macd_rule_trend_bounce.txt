@@ -1,27 +1,33 @@
 { ================================================================================
-  kd_macd_rule_trend_bounce：MACD 趨勢 + KD 超賣反彈（只做多，部位 0 或 100%）
+  kdj_macd_rule_trend_bounce：MACD 趨勢 + KDJ 三線超賣反彈（只做多，部位 0 或 100%）
   --------------------------------------------------------------------------------
   規則（日K，每根K棒收盤後判斷，下一根K棒開盤以市價成交）：
     1. 趨勢腿：MACD 訊號線（DIF 的 9 日 EMA，亦稱 DEA / MACD 線）> 0 時想要持有。
-    2. 反彈腿：K < 20 時出現 KD 黃金交叉（K 由下往上穿越 D）→ 開啟反彈狀態；
-               之後出現 K > 80 的 KD 死亡交叉（K 由上往下穿越 D）→ 關閉反彈狀態。
-               （反彈狀態與趨勢腿各自獨立記錄。）
+    2. 反彈腿：趨勢腿不成立（訊號線 <= 0）時，若 J < 0 且 D < 20（三線超賣）→ 開啟反彈狀態；
+               之後 J 連續 3 根K棒 > 100 且 D > 80（持續超買）→ 關閉反彈狀態。
+               （反彈狀態與趨勢腿各自獨立記錄；開啟的那一根不檢查關閉條件。）
     3. 趨勢腿或反彈腿任一成立 → 持有；兩者都不成立 → 全部賣出。
 
+  KDJ（台灣 9,3,3，1/3 平滑，初值 50）：
+    RSV = (收盤 - 9日最低) / (9日最高 - 9日最低) * 100
+    K = 前K * 2/3 + RSV / 3；D = 前D * 2/3 + K / 3；J = 3K - 2D
+
   Inputs：
-    KLen               KD 的 RSV 天數（預設 9；K、D 平滑固定為 1/3，即台灣常用 9,3,3 KD）
+    KLen               KDJ 的 RSV 天數（預設 9；K、D 平滑固定為 1/3）
     MacdFast/Slow/Sig  MACD 參數（預設 12 / 26 / 9）
-    OSLevel            KD 超賣門檻（預設 20）
-    OBLevel            KD 超買門檻（預設 80）
+    JLow, DLow         三線超賣門檻：J < JLow 且 D < DLow（預設 0 / 20）
+    JHigh, JDays       持續超買：J > JHigh 連續 JDays 根（預設 100 / 3）
+    DHigh              持續超買時 D 也要 > DHigh（預設 80）
     Capital            計算下單股數用的本金，請與 Strategy Properties 的 Initial Capital 相同
 
   注意：
     - 請在 Strategy Properties 設定交易成本：手續費買賣各 0.1425%（依券商折扣調整），
       證交稅賣出 0.3%（若無法只對賣方收稅，可把每邊佣金多加 0.15% 近似），以及合理滑價。
     - Python 回測使用還原權值（除權息調整）日線；MultiCharts 若使用未還原資料，
-      除權息缺口會讓 KD、MACD 與訊號略有不同。
+      除權息缺口會讓 KDJ、MACD 與訊號略有不同。
     - 指標需要暖機，請至少載入 100 根以上歷史K線；最前面幾十根的指標值可能與 Python 不同。
     - 下單股數 =（本金 + 已實現損益）÷ 收盤價，取整數股（零股）；若只交易整張請改成 1000 股的倍數。
+    - 這是研究用範例，回測結果不代表未來績效，也不是投資建議。
   ================================================================================ }
 
 Inputs:
@@ -29,17 +35,20 @@ Inputs:
 	MacdFast(12),
 	MacdSlow(26),
 	MacdSig(9),
-	OSLevel(20),
-	OBLevel(80),
+	JLow(0),
+	DLow(20),
+	JHigh(100),
+	JDays(3),
+	DHigh(80),
 	Capital(1000000);
 
 Vars:
-	rsv(50), kv(50), dv(50), hh(0), ll(0),
-	dif(0), macdv(0),
+	rsv(50), kv(50), dv(50), jv(50), hh(0), ll(0),
+	dif(0), macdv(0), jHotDays(0),
 	trendOn(false), bounceOn(false), wantLong(false),
 	shs(0);
 
-{ ---- 台灣 KD（9,3,3，1/3 平滑，初值 50） ---- }
+{ ---- 台灣 KDJ（9,3,3，1/3 平滑，初值 50；J = 3K - 2D） ---- }
 hh = Highest(High, KLen);
 ll = Lowest(Low, KLen);
 if hh - ll <> 0 then
@@ -48,6 +57,13 @@ else
 	rsv = 50;
 kv = kv[1] * 2 / 3 + rsv / 3;
 dv = dv[1] * 2 / 3 + kv / 3;
+jv = 3 * kv - 2 * dv;
+
+{ J 連續在 JHigh 之上的根數 }
+if jv > JHigh then
+	jHotDays = jHotDays + 1
+else
+	jHotDays = 0;
 
 { ---- MACD：DIF = EMA12 - EMA26，訊號線 = DIF 的 EMA9 ---- }
 dif = XAverage(Close, MacdFast) - XAverage(Close, MacdSlow);
@@ -58,11 +74,11 @@ trendOn = macdv > 0;
 
 { ---- 反彈腿（狀態機） ---- }
 if bounceOn = false then begin
-	if kv > dv and kv[1] <= dv[1] and kv < OSLevel then
+	if trendOn = false and jv < JLow and dv < DLow then
 		bounceOn = true;
 end
 else begin
-	if kv < dv and kv[1] >= dv[1] and kv > OBLevel then
+	if jHotDays >= JDays and dv > DHigh then
 		bounceOn = false;
 end;
 

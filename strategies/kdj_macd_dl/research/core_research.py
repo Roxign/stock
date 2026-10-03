@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from stocklab.indicators import atr, macd, tw_kd
+from stocklab.indicators import atr, macd, tw_kdj as tw_kd
 
 SLOW = 5
 

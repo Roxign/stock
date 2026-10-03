@@ -1,29 +1,22 @@
-"""KD + MACD rule-based strategies (family: KD+MACD 規則). See RESEARCH.md for the study behind them.
+"""KDJ + MACD rule-based strategies (family: KDJ+MACD 規則). See RESEARCH.md for the study behind them.
 
-Both variants are long-only with 0/1 exposure, use the Taiwan-style KD (9,3,3) and MACD (12,26,9) from
-stocklab.indicators, and decide each bar with data up to that bar's close only (the engine fills at the next open).
+Both variants are long-only with 0/1 exposure, use the Taiwan-style KDJ (9,3,3; J = 3K - 2D) and MACD (12,26,9)
+from stocklab.indicators, and decide each bar with data up to that bar's close only (the engine fills at the next open).
 """
 
 import numpy as np
 import pandas as pd
 
-from stocklab.indicators import macd, tw_kd
+from stocklab.indicators import macd, tw_kdj
 
-KD_N = 9
+KDJ_N = 9
 MACD_FAST, MACD_SLOW, MACD_SIG = 12, 26, 9
-OVERSOLD, OVERBOUGHT = 20, 80
-
-
-def _cross_up(a, b):
-    return np.r_[False, (a[1:] > b[1:]) & (a[:-1] <= b[:-1])]
-
-
-def _cross_dn(a, b):
-    return np.r_[False, (a[1:] < b[1:]) & (a[:-1] >= b[:-1])]
+J_LOW, D_LOW = 0, 20  # 三線超賣: J < 0 and D < 20 (which forces K < 13.3)
+J_HIGH, J_DAYS, D_HIGH = 100, 3, 80  # 持續超買: J > 100 for 3 bars in a row while D > 80
 
 
 def _latch(entry, exit_):
-    """0/1 state: switches on at an entry bar and off at an exit bar (the two never coincide for these rules)."""
+    """0/1 state: switches on at an entry bar and off at a later exit bar (exit is not checked on the entry bar)."""
     out = np.zeros(len(entry))
     on = False
     for i in range(len(entry)):
@@ -35,101 +28,116 @@ def _latch(entry, exit_):
     return out
 
 
+def _streak(mask):
+    """Number of consecutive True values ending at each bar."""
+    out = np.zeros(len(mask), dtype=int)
+    run = 0
+    for i, m in enumerate(mask):
+        run = run + 1 if m else 0
+        out[i] = run
+    return out
+
+
 def _signals(df):
-    kd = tw_kd(df, KD_N)
+    kdj = tw_kdj(df, KDJ_N)
     m = macd(df["close"], MACD_FAST, MACD_SLOW, MACD_SIG)
-    k, d = kd["k"].to_numpy(), kd["d"].to_numpy()
     return {
-        "k": k,
-        "golden": _cross_up(k, d),  # K crosses above D
-        "death": _cross_dn(k, d),  # K crosses below D
+        "k": kdj["k"].to_numpy(),
+        "d": kdj["d"].to_numpy(),
+        "j": kdj["j"].to_numpy(),
         "signal": m["macd"].to_numpy(),  # MACD signal line (EMA9 of DIF)
         "osc": m["osc"].to_numpy(),  # histogram = DIF - signal
     }
 
 
 def trend_bounce(data):
-    """Long while the MACD signal line is above zero, OR while a KD oversold-bounce trade is open
-    (opened by a golden cross with K < 20, closed by a death cross with K > 80)."""
+    """Long while the MACD signal line is above zero, OR while a KDJ bounce trade is open.
+    The bounce trade opens only while the signal line is <= 0, on J < 0 with D < 20, and closes after
+    J has stayed above 100 for 3 bars in a row with D > 80."""
     out = {}
     for code, df in data.items():
         s = _signals(df)
-        trend = (s["signal"] > 0).astype(float)
-        bounce = _latch(s["golden"] & (s["k"] < OVERSOLD), s["death"] & (s["k"] > OVERBOUGHT))
-        out[code] = pd.Series(np.maximum(trend, bounce), index=df.index)
+        trend = s["signal"] > 0
+        entry = ~trend & (s["j"] < J_LOW) & (s["d"] < D_LOW)
+        exit_ = (_streak(s["j"] > J_HIGH) >= J_DAYS) & (s["d"] > D_HIGH)
+        bounce = _latch(entry, exit_)
+        out[code] = pd.Series(np.maximum(trend.astype(float), bounce), index=df.index)
     return out
 
 
 def classic_zone(data):
-    """Textbook combo: buy on a KD golden cross below 20 while the MACD histogram rises;
-    sell on a KD death cross above 80 while the histogram falls."""
+    """Textbook KDJ + MACD histogram combo: buy when J < 0 while the histogram rises;
+    sell when J > 100 while the histogram falls."""
     out = {}
     for code, df in data.items():
         s = _signals(df)
         osc = s["osc"]
         rising = np.r_[False, osc[1:] > osc[:-1]]
         falling = np.r_[False, osc[1:] < osc[:-1]]
-        entry = s["golden"] & (s["k"] < OVERSOLD) & rising
-        exit_ = s["death"] & (s["k"] > OVERBOUGHT) & falling
+        entry = (s["j"] < J_LOW) & rising
+        exit_ = (s["j"] > J_HIGH) & falling
         out[code] = pd.Series(_latch(entry, exit_), index=df.index)
     return out
 
 
 DESC_TREND_BOUNCE = """\
-**一句話**：MACD 訊號線在零軸之上就抱著（順勢）；跌到 KD 超賣區出現黃金交叉時也進場搶反彈（逆勢），兩者任一成立就持有。
+**一句話**：MACD 訊號線在零軸之上就抱著（順勢）；趨勢不在時，等 KDJ 跌到「三線超賣」（J < 0 且 D < 20）才進場搶反彈，直到 J 連續 3 天 > 100 且 D > 80（持續超買）才結束反彈單。兩者任一成立就持有。
 
 **規則**（日線，收盤後判斷，隔天開盤成交，只做多，部位 0% 或 100%）
 1. 趨勢腿：MACD 訊號線（DIF 的 9 日 EMA）> 0 → 想持有。
-2. 反彈腿：K < 20 時 KD 黃金交叉 → 開啟反彈狀態；之後 K > 80 時 KD 死亡交叉 → 關閉。
+2. 反彈腿：趨勢腿不成立（訊號線 ≤ 0）時，若 **J < 0 且 D < 20** → 開啟反彈狀態；之後 **J 連續 3 天 > 100 且 D > 80** → 關閉。
 3. 趨勢腿或反彈腿任一成立就持有，兩者都不成立就全部賣出。
 
-**參數**：KD 9,3,3（台灣慣用、1/3 平滑）、MACD 12,26,9、超賣 20 / 超買 80。全部是教科書預設值，沒有針對個股或期間調整，50 檔共用同一組。
+**參數**：KDJ 9,3,3（台灣慣用、1/3 平滑，J = 3K − 2D）、MACD 12,26,9、J 超賣 0 / D 超賣 20、J 超買 100 連續 3 天 / D 超買 80。全部是常見口訣值，50 檔共用同一組，沒有分股或分期間調整。
 
-**為什麼這樣設計**（樣本內 2010–2020 的研究結果）
-- 事件研究顯示，MACD 訊號線跌破零軸後 20 日平均落後股票本身漂移約 0.8%，是有效的「出場」訊號；但單用它（持有率約 58%）會錯過很多上漲，Sharpe 只有 0.42。
-- KD 在超賣區（K < 20）之後幾天的報酬明顯高於平均（短期反轉），KD 高檔死亡交叉之後反而續漲 —— 所以 KD 用來「逆勢補位」，而不是追高殺低。
-- 兩者合併後持有率約 85%，樣本內 Sharpe 0.51（與買進持有相同）、CAGR 中位數 8.9%（買進持有 9.6%），47% 的股票 Sharpe 勝過買進持有、76% 的股票勝過定期定額。鄰近參數（MACD 10~14 / 22~30、KD 7~12 日、超買 70~90）結果都在 Sharpe 0.49~0.53 之間。
+**為什麼這樣設計**（樣本內 2010–2020 研究）
+- J 值的確比 K 值多一點資訊：J < 0 的日子隔天超額報酬年化 +34%，比 K < 20 的 +27% 強；J < 0 連續 3 天且 MACD 偏空時，之後 5 天平均超額 +1.09%（K < 20 黃金交叉只有 +0.34%）。所以反彈腿改用 J 在「跌勢中」提早進場，而不是等 KD 黃金交叉。
+- 但 J > 100 只是短線過熱：J 一碰 100 就賣，樣本內 Sharpe 從 0.49 掉到 0.41，因為 J 破 100 之後的弱勢只維持 1～5 天，20 天後平均已經沒有落後。出場因此改成「J 連續 3 天 > 100 且 D > 80」這種強勢鈍化後才下車（等於只在反彈真正走完一段時賣）。
+- 結果：樣本內 CAGR 中位數 9.0%（買進持有 9.6%）、Sharpe 0.49（0.49）、MDD −45.0%（−46.1%）、持有率約 86%；47% 的股票報酬勝過買進持有、53% 的股票 Sharpe 勝過買進持有。
+- 與上一輪 KD 版（K < 20 金叉 → K > 80 死叉）相比：逐檔 Sharpe 差的中位數 +0.03，但 90% 信賴區間包含 0 —— **J 讓結果略好一點，但差距在雜訊範圍內**。
+- 鄰近參數（J 超賣 −5～10、D 超賣 15～30、超買連續 1～5 天、D 超買 70～85、KDJ 7/9/12 日、MACD 10~14/22~30）樣本內 Sharpe 約 0.43~0.53，沒有明顯的尖峰。
+- 也測試了台灣常看的均線（5/10/20/60/120/240 日）：站上季線/年線才做、多頭排列、突破月線/季線進出場都沒有改善，因此沒有加入（詳見研究筆記）。
 
-**樣本外 2021–2026**：CAGR 中位數 29.0%（買進持有 35.7%、定期定額 25.3%），Sharpe 0.98（買進持有 1.10），MDD 中位數 −45.6%（與買進持有相同）；只有 14% 的股票報酬勝過買進持有，60% 勝過定期定額。2022 空頭年小幅領先，其餘多頭年份落後。
+**樣本外 2021–2026**（參數凍結後只跑一次）：CAGR 中位數 29.3%（買進持有 35.7%、定期定額 25.3%），Sharpe 1.04（買進持有 1.10），MDD 中位數 −44.1%（買進持有 −45.5%）；18% 的股票報酬勝過買進持有、78% 勝過定期定額。比上一輪 KD 版（29.0% / Sharpe 0.98）好一點（74% 的股票 Sharpe 較高），主要是因為反彈單抱得比較久、在大多頭裡持股比較高，而不是擇時變準。2022 空頭年與買進持有打平，其餘年份小幅落後。
 
 **注意**
 - 這是「接近買進持有、偶爾避開空頭」的策略，不是報酬增強器；在大多頭年份會落後。
-- 超賣門檻 20 是局部最佳：改成 15 或 25 時樣本內 Sharpe 落在 0.42~0.52（超買 80 時分別為 0.50 / 0.47），對這個門檻較敏感。
+- J 版反彈腿進場比 KD 版早，**急跌時會更早接刀**：2020 年 2~3 月疫情急跌期間，個股中位數虧 17.7%（KD 版 10.3%，買進持有 26.0%）。
 - 回測使用還原權值日線、買賣手續費 0.1425%、賣出證交稅 0.3%，未計滑價。
 """
 
 DESC_CLASSIC = """\
-**一句話**：台灣最常見的教科書組合 —— KD 低檔黃金交叉且 MACD 柱狀體翻揚就買，KD 高檔死亡交叉且柱狀體轉弱就賣。放在這裡當作**對照組**。
+**一句話**：網路上最常見的 KDJ 口訣「J 值負值買、J 值破 100 賣」再加上 MACD 柱狀體確認。放在這裡當作**對照組**。
 
 **規則**（日線，收盤後判斷，隔天開盤成交，只做多，部位 0% 或 100%）
-- 進場：K < 20 時 KD 黃金交叉，且 MACD 柱狀體（OSC = DIF − 訊號線）比前一天高（綠柱縮短 / 紅柱變長）。
-- 出場：K > 80 時 KD 死亡交叉，且 MACD 柱狀體比前一天低。
+- 進場：J < 0，且 MACD 柱狀體（OSC = DIF − 訊號線）比前一天高（綠柱縮短 / 紅柱變長）。
+- 出場：J > 100，且 MACD 柱狀體比前一天低。
 
-**參數**：KD 9,3,3、MACD 12,26,9、超賣 20 / 超買 80（教科書預設值，未調整）。
+**參數**：KDJ 9,3,3、MACD 12,26,9、J 超賣 0 / 超買 100（口訣值，未調整）。
 
 **結果**
-- 樣本內 2010–2020：CAGR 中位數 4.4%（買進持有 9.6%）、Sharpe 0.35（0.51）、MDD −40.8%（−46.1%）、持有率約 39%、勝率 67%，只有 14% 的股票報酬勝過買進持有。
-- 樣本外 2021–2026：CAGR 中位數 9.4%（買進持有 35.7%）、Sharpe 0.61（1.10）、MDD −34.0%、勝率 80%，只有 2% 的股票勝過買進持有。
-- 若拿掉 20 / 80 區間限制（任何 KD 交叉 + 柱狀體方向都交易），樣本內每檔約交易 200 次，CAGR 中位數 −8.3%：交易成本與短期反轉把訊號完全吃掉。
+- 樣本內 2010–2020：CAGR 中位數 3.2%（買進持有 9.6%）、Sharpe 0.31（0.49）、MDD −42.0%（−46.1%）、持有率約 40%、勝率 75%，只有 14% 的股票報酬勝過買進持有。
+- 樣本外 2021–2026：CAGR 中位數 11.1%（買進持有 35.7%）、Sharpe 0.72（1.10）、MDD −40.1%、持有率約 50%、勝率 100%（中位數），只有 10% 的股票勝過買進持有。
+- 若拿掉 MACD 柱狀體確認（純「J < 0 買、J > 100 賣」），樣本內每檔約交易 54 次，CAGR 中位數只剩 2.7%：J 太靈敏，一反彈就碰到 100，賣在起漲初段。
 
-**為什麼保留它**：讓你在每一檔股票上直接看到「勝率高 ≠ 賺得多」—— 這套規則勝率很高，但持有時間短、常在主升段之前就下車，長期報酬遠低於買進持有。MACD 柱狀體確認在研究中沒有改善純 KD 低買高賣（Sharpe 0.37 → 0.35）。
+**為什麼保留它**：讓你在每一檔股票上直接看到「勝率高 ≠ 賺得多」—— 這套規則勝率很高，但持有時間短、常在主升段之前就下車，長期報酬遠低於買進持有。它是上一輪 KD 對照組（K < 20 金叉 + 柱狀體）的 KDJ 版本，結果也差不多（樣本內 Sharpe 0.34 → 0.31）。**不建議實際使用。**
 """
 
 STRATEGIES = [
     {
-        "id": "kd_macd_rule_trend_bounce",
-        "label": "MACD趨勢＋KD超賣反彈",
-        "family": "KD+MACD 規則",
+        "id": "kdj_macd_rule_trend_bounce",
+        "label": "MACD趨勢＋KDJ三線超賣反彈",
+        "family": "KDJ+MACD 規則",
         "description": DESC_TREND_BOUNCE,
-        "multicharts": "multicharts/kd_macd_rule_trend_bounce.txt",
+        "multicharts": "multicharts/kdj_macd_rule_trend_bounce.txt",
         "positions": trend_bounce,
     },
     {
-        "id": "kd_macd_rule_classic_zone",
-        "label": "KD低檔金叉＋MACD柱確認（傳統對照）",
-        "family": "KD+MACD 規則",
+        "id": "kdj_macd_rule_classic_zone",
+        "label": "KDJ口訣＋MACD柱確認（傳統對照）",
+        "family": "KDJ+MACD 規則",
         "description": DESC_CLASSIC,
-        "multicharts": "multicharts/kd_macd_rule_classic_zone.txt",
+        "multicharts": "multicharts/kdj_macd_rule_classic_zone.txt",
         "positions": classic_zone,
     },
 ]

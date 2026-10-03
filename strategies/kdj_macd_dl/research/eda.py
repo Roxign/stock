@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from harness import data
-from stocklab.indicators import atr, ema, macd, tw_kd
+from stocklab.indicators import atr, ema, macd, tw_kdj as tw_kd
 
 
 def feats(df):

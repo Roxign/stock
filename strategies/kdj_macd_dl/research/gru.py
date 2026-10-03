@@ -3,11 +3,11 @@ import sys, time, numpy as np, pandas as pd, torch
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[3]))
 from sklearn.metrics import roc_auc_score
 from harness import data
-from strategies.kd_macd_dl import core
+from strategies.kdj_macd_dl import core
 torch.set_num_threads(2); torch.use_deterministic_algorithms(True)
 T, STRIDE = 20, 3
 d = data()
-stocks, _ = core._prepare(d)
+stocks, _ = core.prepare(d, ("kd",))
 for s in stocks:
     ind = s["ind"]; a = ind["atr"].to_numpy()
     s["F"] = np.column_stack([ind["k"] / 100 - .5, ind["d"] / 100 - .5, ind["dif"] / a, ind["osc"] / a,
