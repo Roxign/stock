@@ -1,0 +1,48 @@
+{ =====================================================================
+  均值回歸：Connors RSI(2) 經典版（對照組）(mean_reversion_rsi2_classic)
+  ---------------------------------------------------------------------
+  Larry Connors 的 2 期 RSI 規則，未針對台股調參，作為對照：
+    進場：收盤價 > TrendLen 日均線，且 RSI(RSILen) < BuyLevel。
+    出場：收盤價 > ExitLen 日均線。
+  所有判斷都在 K 棒收盤時計算，於「下一根 K 棒開盤」以市價成交。
+
+  輸入參數：
+    RSILen    RSI 期數（預設 2）
+    BuyLevel  超賣門檻（預設 5）
+    TrendLen  長期趨勢均線（預設 200）
+    ExitLen   出場均線（預設 5）
+
+  使用提醒：
+    1. 請套用在「日線」，建議使用還原權息資料。
+    2. 請在 Strategy Properties 設定交易成本：手續費 0.1425%（買、賣各收一次），
+       賣出另收證交稅 0.3%，並依流動性加入滑價。這個策略平均每筆只持有
+       3～4 天，扣成本前每筆平均約賺 0.95%，對成本非常敏感；
+       研究顯示在台股個股上大部分優勢都被成本吃掉。
+    3. Python 回測每次以全部資金進出（允許零股）；在 MultiCharts 可用
+       Trade Size 設定每筆投入金額。
+    4. 請載入足夠長的歷史資料（至少 200 根以上），讓均線與 RSI 有效。
+  ===================================================================== }
+
+Inputs:
+    RSILen(2), BuyLevel(5), TrendLen(200), ExitLen(5);
+
+Variables:
+    rsiV(0), trendMA(0), exitMA(0), tgt(0);
+
+{ 指標每根 K 棒都要計算 }
+rsiV = RSI(Close, RSILen);
+trendMA = Average(Close, TrendLen);
+exitMA = Average(Close, ExitLen);
+
+if tgt = 1 then begin
+    if Close > exitMA then
+        tgt = 0;
+end
+else if rsiV < BuyLevel and Close > trendMA then
+    tgt = 1;
+
+{ 依目標部位下單：下一根 K 棒開盤市價 }
+if tgt = 1 and MarketPosition = 0 then
+    Buy ("LE") next bar at market;
+if tgt = 0 and MarketPosition = 1 then
+    Sell ("LX") next bar at market;

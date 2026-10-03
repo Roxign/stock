@@ -1,0 +1,48 @@
+﻿{ =====================================================================
+  trend_donchian ── 唐奇安通道突破 120/60（海龜式，只做多）
+  ---------------------------------------------------------------------
+  規則（與 Python 版 strategies/trend/strategy.py 的 donchian() 相同）：
+    空手時：今日收盤價 > 前 EntryLen 根 K 棒的「最高收盤價」 → 下一根開盤買進
+    持有時：今日收盤價 < 前 ExitLen  根 K 棒的「最低收盤價」 → 下一根開盤全部賣出
+    部位只有 0 或 1（全部資金）。
+
+  輸入參數：
+    EntryLen  進場通道長度，預設 120（約半年新高）
+    ExitLen   出場通道長度，預設 60（約一季新低）
+    LotSize   下單單位股數：1 = 零股（最接近 Python 的可分割股數），1000 = 整張
+
+  使用前請務必設定（Format Signals → Properties / Strategy Properties）：
+    1. 套用在「日線」，價格請使用「還原權值」（除權息調整）資料，才會與回測一致。
+    2. Commission：買賣各 0.1425%（依券商折扣調整）；證交稅：賣出 0.3%。
+       若您的版本無法只對賣出收稅，可改用「雙邊各 0.2925%」近似
+       （來回總成本 0.585%，與 Python 回測相同）。
+    3. Slippage：依實際成交情況自行設定（Python 回測以隔日開盤價成交、未計滑價）。
+    4. Initial Capital：例如 1,000,000（Python 回測的本金）。
+    5. MaxBarsBack 至少 121（或使用 Auto-detect）。
+  說明：股數以「目前權益 ÷ 今日收盤價」估算，Python 版以隔日開盤價計算，
+        兩者在部位大小上會有些微差異，但進出場時點相同。
+  ===================================================================== }
+
+inputs:
+    EntryLen(120),
+    ExitLen(60),
+    LotSize(1);
+
+vars:
+    HiCh(0),
+    LoCh(0),
+    Eq(0),
+    Qty(0);
+
+HiCh = Highest(Close, EntryLen)[1];   { 不含今日的前 EntryLen 根最高收盤 }
+LoCh = Lowest(Close, ExitLen)[1];     { 不含今日的前 ExitLen 根最低收盤 }
+
+if MarketPosition = 0 and Close > HiCh then begin
+    Eq = InitialCapital + NetProfit;
+    Qty = IntPortion(Eq / Close / LotSize) * LotSize;
+    if Qty > 0 then
+        Buy ("DC_LE") Qty shares next bar at market;
+end;
+
+if MarketPosition = 1 and Close < LoCh then
+    Sell ("DC_LX") next bar at market;

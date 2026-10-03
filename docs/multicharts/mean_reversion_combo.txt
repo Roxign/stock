@@ -1,0 +1,78 @@
+{ =====================================================================
+  均值回歸：超跌反彈組合 (mean_reversion_combo)
+  ---------------------------------------------------------------------
+  兩個獨立的子系統，任一個持有中就持有股票（只做多、全進全出）：
+    A 中期超賣：RSI(RSILen) < OSLevel 進場；
+                RSI > OBLevel，或進場訊號後滿 MaxHold 根 K 棒時出場。
+    B 短期急跌：收盤價較 DropDays 根前下跌超過 DropPct% 進場；
+                收盤價站上 ExitMALen 日均線時出場。
+  所有判斷都在 K 棒收盤時計算，於「下一根 K 棒開盤」以市價成交。
+
+  輸入參數：
+    RSILen     RSI 期數（預設 14）
+    OSLevel    超賣進場門檻（預設 25）
+    OBLevel    子系統 A 出場的 RSI 門檻（預設 70）
+    MaxHold    子系統 A 最多持有 K 棒數（預設 60，約一季）
+    DropDays   急跌計算的 K 棒數（預設 5）
+    DropPct    急跌門檻，百分比（預設 10 = 下跌超過 10%）
+    ExitMALen  子系統 B 出場均線期數（預設 10）
+
+  使用提醒：
+    1. 請套用在「日線」，並建議使用還原權息資料；未還原資料的除權息缺口
+       可能被誤判為急跌而觸發假訊號。
+    2. 請在 Strategy Properties 設定交易成本：手續費 0.1425%（買、賣各收一次），
+       賣出另收證交稅 0.3%，並依流動性加入滑價。Python 回測即採用上述成本
+       （來回約 0.585%）。
+    3. Python 回測每次以全部資金進出（允許零股）；在 MultiCharts 可用
+       Trade Size 設定每筆投入金額。
+    4. 請載入足夠長的歷史資料（建議 1 年以上），讓 RSI 起始值的影響消失，
+       結果才會與 Python 版本一致。
+    5. 不設停損：研究中停損一律讓這類策略變差（詳見 RESEARCH.md）。
+  ===================================================================== }
+
+Inputs:
+    RSILen(14), OSLevel(25), OBLevel(70), MaxHold(60),
+    DropDays(5), DropPct(10), ExitMALen(10);
+
+Variables:
+    rsiV(0), exitMA(0), chg(0),
+    tgtA(0), heldA(0), tgtB(0), tgt(0);
+
+{ 指標每根 K 棒都要計算（RSI 是序列函數，不可放在條件式裡面） }
+rsiV = RSI(Close, RSILen);
+exitMA = Average(Close, ExitMALen);
+if Close[DropDays] > 0 then
+    chg = Close / Close[DropDays] - 1
+else
+    chg = 0;
+
+{ 子系統 A：中期超賣，等 RSI 回升或時間到 }
+if tgtA = 1 then begin
+    heldA = heldA + 1;
+    if rsiV > OBLevel or heldA >= MaxHold then
+        tgtA = 0;
+end
+else if rsiV < OSLevel then begin
+    tgtA = 1;
+    heldA = 0;
+end;
+
+{ 子系統 B：短期急跌，站回均線就出場 }
+if tgtB = 1 then begin
+    if Close > exitMA then
+        tgtB = 0;
+end
+else if chg < -DropPct * 0.01 then
+    tgtB = 1;
+
+{ 合併：任一子系統持有就持有 }
+if tgtA = 1 or tgtB = 1 then
+    tgt = 1
+else
+    tgt = 0;
+
+{ 依目標部位下單：下一根 K 棒開盤市價 }
+if tgt = 1 and MarketPosition = 0 then
+    Buy ("LE") next bar at market;
+if tgt = 0 and MarketPosition = 1 then
+    Sell ("LX") next bar at market;

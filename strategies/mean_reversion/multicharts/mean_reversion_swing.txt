@@ -1,0 +1,46 @@
+{ =====================================================================
+  均值回歸：拉回買進・過熱賣出 (mean_reversion_swing)
+  ---------------------------------------------------------------------
+  只做多、全進全出：
+    買進：短週期 RSI(FastLen) < BuyLevel（短線拉回）。
+    賣出：長週期 RSI(SlowLen) > SellLevel（中期過熱）；賣出後等下一次拉回再買。
+  所有判斷都在 K 棒收盤時計算，於「下一根 K 棒開盤」以市價成交。
+  持股時間約九成，本質是「買進持有，但過熱時先下車、拉回再上車」。
+
+  輸入參數：
+    FastLen    買進用 RSI 期數（預設 2）
+    BuyLevel   買進門檻（預設 10）
+    SlowLen    賣出用 RSI 期數（預設 14）
+    SellLevel  賣出門檻（預設 75）
+
+  使用提醒：
+    1. 請套用在「日線」，建議使用還原權息資料。
+    2. 請在 Strategy Properties 設定交易成本：手續費 0.1425%（買、賣各收一次），
+       賣出另收證交稅 0.3%，並依流動性加入滑價。Python 回測即採用上述成本。
+    3. Python 回測每次以全部資金進出（允許零股）；在 MultiCharts 可用
+       Trade Size 設定每筆投入金額。
+    4. 請載入足夠長的歷史資料（建議 1 年以上），讓 RSI 起始值的影響消失。
+  ===================================================================== }
+
+Inputs:
+    FastLen(2), BuyLevel(10), SlowLen(14), SellLevel(75);
+
+Variables:
+    rFast(0), rSlow(0), tgt(0);
+
+{ 指標每根 K 棒都要計算 }
+rFast = RSI(Close, FastLen);
+rSlow = RSI(Close, SlowLen);
+
+if tgt = 1 then begin
+    if rSlow > SellLevel then
+        tgt = 0;
+end
+else if rFast < BuyLevel then
+    tgt = 1;
+
+{ 依目標部位下單：下一根 K 棒開盤市價 }
+if tgt = 1 and MarketPosition = 0 then
+    Buy ("LE") next bar at market;
+if tgt = 0 and MarketPosition = 1 then
+    Sell ("LX") next bar at market;

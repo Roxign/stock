@@ -1,0 +1,79 @@
+{ ================================================================================
+  kd_macd_rule_trend_bounce：MACD 趨勢 + KD 超賣反彈（只做多，部位 0 或 100%）
+  --------------------------------------------------------------------------------
+  規則（日K，每根K棒收盤後判斷，下一根K棒開盤以市價成交）：
+    1. 趨勢腿：MACD 訊號線（DIF 的 9 日 EMA，亦稱 DEA / MACD 線）> 0 時想要持有。
+    2. 反彈腿：K < 20 時出現 KD 黃金交叉（K 由下往上穿越 D）→ 開啟反彈狀態；
+               之後出現 K > 80 的 KD 死亡交叉（K 由上往下穿越 D）→ 關閉反彈狀態。
+               （反彈狀態與趨勢腿各自獨立記錄。）
+    3. 趨勢腿或反彈腿任一成立 → 持有；兩者都不成立 → 全部賣出。
+
+  Inputs：
+    KLen               KD 的 RSV 天數（預設 9；K、D 平滑固定為 1/3，即台灣常用 9,3,3 KD）
+    MacdFast/Slow/Sig  MACD 參數（預設 12 / 26 / 9）
+    OSLevel            KD 超賣門檻（預設 20）
+    OBLevel            KD 超買門檻（預設 80）
+    Capital            計算下單股數用的本金，請與 Strategy Properties 的 Initial Capital 相同
+
+  注意：
+    - 請在 Strategy Properties 設定交易成本：手續費買賣各 0.1425%（依券商折扣調整），
+      證交稅賣出 0.3%（若無法只對賣方收稅，可把每邊佣金多加 0.15% 近似），以及合理滑價。
+    - Python 回測使用還原權值（除權息調整）日線；MultiCharts 若使用未還原資料，
+      除權息缺口會讓 KD、MACD 與訊號略有不同。
+    - 指標需要暖機，請至少載入 100 根以上歷史K線；最前面幾十根的指標值可能與 Python 不同。
+    - 下單股數 =（本金 + 已實現損益）÷ 收盤價，取整數股（零股）；若只交易整張請改成 1000 股的倍數。
+  ================================================================================ }
+
+Inputs:
+	KLen(9),
+	MacdFast(12),
+	MacdSlow(26),
+	MacdSig(9),
+	OSLevel(20),
+	OBLevel(80),
+	Capital(1000000);
+
+Vars:
+	rsv(50), kv(50), dv(50), hh(0), ll(0),
+	dif(0), macdv(0),
+	trendOn(false), bounceOn(false), wantLong(false),
+	shs(0);
+
+{ ---- 台灣 KD（9,3,3，1/3 平滑，初值 50） ---- }
+hh = Highest(High, KLen);
+ll = Lowest(Low, KLen);
+if hh - ll <> 0 then
+	rsv = (Close - ll) / (hh - ll) * 100
+else
+	rsv = 50;
+kv = kv[1] * 2 / 3 + rsv / 3;
+dv = dv[1] * 2 / 3 + kv / 3;
+
+{ ---- MACD：DIF = EMA12 - EMA26，訊號線 = DIF 的 EMA9 ---- }
+dif = XAverage(Close, MacdFast) - XAverage(Close, MacdSlow);
+macdv = XAverage(dif, MacdSig);
+
+{ ---- 趨勢腿 ---- }
+trendOn = macdv > 0;
+
+{ ---- 反彈腿（狀態機） ---- }
+if bounceOn = false then begin
+	if kv > dv and kv[1] <= dv[1] and kv < OSLevel then
+		bounceOn = true;
+end
+else begin
+	if kv < dv and kv[1] >= dv[1] and kv > OBLevel then
+		bounceOn = false;
+end;
+
+wantLong = trendOn or bounceOn;
+
+{ ---- 下單：0 / 100% 部位 ---- }
+if wantLong and MarketPosition = 0 then begin
+	shs = IntPortion((Capital + NetProfit) / Close);
+	if shs > 0 then
+		Buy ("LE") shs shares next bar at market;
+end;
+
+if wantLong = false and MarketPosition = 1 then
+	Sell ("LX") next bar at market;
