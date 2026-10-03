@@ -566,6 +566,8 @@ function initTheme() {
 async function main() {
   initTheme();
   S = await fetch("data/summary.json").then((r) => r.json());
+  S.folds ??= [];
+  S.cv ??= {};
   configure(S.engine);
   assignStyles();
   $("dataDate").textContent = `資料至 ${S.stocks[0].end}・成分股 ${S.data_date}`;
