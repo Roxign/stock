@@ -1,16 +1,20 @@
-import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKd, macd, ENGINE } from "./engine.js";
+import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
-const FAMILY_SLOT = { "KD+MACD 規則": 1, "KD+MACD+深度學習": 2, "趨勢追蹤": 3, "均值回歸": 4 };
+const FAMILY_SLOT = { "KDJ+MACD 規則": 1, "KDJ+MACD+深度學習": 2, "趨勢追蹤": 3, "均值回歸": 4 };
 const LINE_STYLES = ["solid", "dash", "dot"];
 const PERIOD_SHORT = { full: "全期", is: "樣本內", oos: "樣本外", custom: "自訂" };
 const PERIOD_TITLE = { full: "2010 至今", is: "2010–2020：策略開發與調參用", oos: "2021 至今：開發時沒看過的資料，用來驗證", custom: "自選起訖日" };
+
+const MAS = [[5, "週線", "--s1"], [10, "雙週線", "--s2"], [20, "月線", "--s3"], [60, "季線", "--s4"], [120, "半年線", "--s5"], [240, "年線", "--s7"]];
 
 let S;
 const stockCache = new Map();
 const state = { tab: "overview", period: "oos", metric: "cagr_diff", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
 const shown = new Set(["buy_hold", "dca"]);
+const shownMa = new Set(MAS.map(([n]) => n));
+try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
 let charts = [];
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -186,7 +190,8 @@ const hideTip = () => ($("tip").hidden = true);
 async function loadStock(code) {
   if (!stockCache.has(code)) {
     stockCache.set(code, fetch(`data/stocks/${code}.json`).then((r) => r.json()).then((st) => {
-      st.kd = twKd(st);
+      st.kd = twKdj(st);
+      st.ma = Object.fromEntries(MAS.map(([n]) => [n, sma(st.c, n)]));
       st.macd = macd(Float64Array.from(st.c));
       return st;
     }));
@@ -265,7 +270,7 @@ async function renderStock() {
   if (!b) {
     $("stockRange").textContent = `此期間資料不足（${st.name} 的資料從 ${st.d[0]} 開始，需先有 ${ENGINE.warmup} 個交易日暖身）`;
     for (const id of ["stockTable", "tradesTable"]) $(id).innerHTML = "";
-    for (const id of ["lgPrice", "lgKd", "lgMacd", "lgEq"]) $(id).innerHTML = "";
+    for (const id of ["lgPrice", "lgMa", "lgKd", "lgMacd", "lgEq"]) $(id).innerHTML = "";
     return;
   }
   const [i0, i1] = b;
@@ -309,6 +314,22 @@ function drawCharts(st, i0, i1, runs) {
   vol.setData(T.map((t, k) => ({ time: t, value: st.v[i0 + k] })));
   price.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
   candle.priceScale().applyOptions({ mode: state.log ? LWC.PriceScaleMode.Logarithmic : LWC.PriceScaleMode.Normal });
+  const maSeries = new Map();
+  for (const [n, , v] of MAS) {
+    const s = price.addLineSeries({ color: cssVar(v), lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, visible: shownMa.has(n) });
+    s.setData(T.map((t, k) => { const x = st.ma[n][i0 + k]; return Number.isFinite(x) ? { time: t, value: x } : { time: t }; }));
+    maSeries.set(n, s);
+  }
+  $("lgMa").innerHTML = MAS.map(([n, name, v]) => `<button type="button" class="ma-tog" data-ma="${n}" aria-pressed="${shownMa.has(n)}"><span class="swatch" style="color:var(${v})"></span>${name} ${n}<b></b></button>`).join("");
+  $("lgMa").onclick = (e) => {
+    const b = e.target.closest("[data-ma]");
+    if (!b) return;
+    const n = +b.dataset.ma;
+    if (shownMa.has(n)) shownMa.delete(n); else shownMa.add(n);
+    b.setAttribute("aria-pressed", String(shownMa.has(n)));
+    maSeries.get(n).applyOptions({ visible: shownMa.has(n) });
+    try { localStorage.setItem("mas", JSON.stringify([...shownMa])); } catch {}
+  };
   const fs = strat(state.focus), fcolor = cssVar(fs.colorVar), fills = runs[state.focus].fills;
   candle.setMarkers(fills.map((f) => {
     const buy = f.to > f.from;
@@ -319,8 +340,10 @@ function drawCharts(st, i0, i1, runs) {
   const kdC = LWC.createChart($("chKd"), chartOptions(false));
   const kS = kdC.addLineSeries({ color: cssVar("--s1"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
   const dS = kdC.addLineSeries({ color: cssVar("--s2"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+  const jS = kdC.addLineSeries({ color: cssVar("--s5"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
   kS.setData(T.map((t, k) => ({ time: t, value: st.kd.k[i0 + k] })));
   dS.setData(T.map((t, k) => ({ time: t, value: st.kd.d[i0 + k] })));
+  jS.setData(T.map((t, k) => ({ time: t, value: st.kd.j[i0 + k] })));
   for (const lvl of [20, 80]) kS.createPriceLine({ price: lvl, color: cssVar("--axis"), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: "" });
 
   const mC = LWC.createChart($("chMacd"), chartOptions(true));
@@ -354,7 +377,8 @@ function drawCharts(st, i0, i1, runs) {
   const legends = (k) => {
     const i = i0 + k, prev = i > 0 ? st.c[i - 1] : st.c[i], chg = st.c[i] / prev - 1;
     $("lgPrice").innerHTML = `<span><b>${T[k]}</b></span><span>開 ${num(st.o[i])}</span><span>高 ${num(st.h[i])}</span><span>低 ${num(st.l[i])}</span><span>收 <b>${num(st.c[i])}</b> <span class="${chg >= 0 ? "pos" : "neg"}">${spct(chg, 2)}</span></span><span>量 ${st.v[i].toLocaleString()} 張</span><span class="item">${swatch(fs)}標記：${esc(fs.label)}</span>`;
-    $("lgKd").innerHTML = `<span>KD(9,3,3)</span><span class="item"><span class="swatch" style="color:var(--s1)"></span>K <b>${num(st.kd.k[i], 1)}</b></span><span class="item"><span class="swatch" style="color:var(--s2)"></span>D <b>${num(st.kd.d[i], 1)}</b></span>`;
+    $("lgMa").querySelectorAll("[data-ma]").forEach((b) => { b.querySelector("b").textContent = num(st.ma[+b.dataset.ma][i], 1); });
+    $("lgKd").innerHTML = `<span>KDJ(9,3,3)</span><span class="item"><span class="swatch" style="color:var(--s1)"></span>K <b>${num(st.kd.k[i], 1)}</b></span><span class="item"><span class="swatch" style="color:var(--s2)"></span>D <b>${num(st.kd.d[i], 1)}</b></span><span class="item"><span class="swatch" style="color:var(--s5)"></span>J <b>${num(st.kd.j[i], 1)}</b></span>`;
     $("lgMacd").innerHTML = `<span>MACD(12,26,9)</span><span class="item"><span class="swatch" style="color:var(--s1)"></span>DIF <b>${num(st.macd.dif[i])}</b></span><span class="item"><span class="swatch" style="color:var(--s2)"></span>MACD <b>${num(st.macd.macd[i])}</b></span><span>OSC <b>${num(st.macd.osc[i])}</b></span>`;
     $("lgEq").innerHTML = `<span><b>資產曲線</b> ${T[k]}</span>` + eqSeries.map(({ s, eq }) => `<span class="item">${swatch(s)}${esc(s.label)} <b>${(eq[k] / ENGINE.capital).toFixed(2)}x</b></span>`).join("");
   };

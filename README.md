@@ -1,11 +1,12 @@
 # 台灣50 策略實驗室
 
-以元大台灣50（0050）的 50 檔成分股為對象，研究多種交易策略，並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：每個策略都附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到 GitHub Pages 網頁，可在任何裝置上逐檔檢視。
+**網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可，逐檔檢視每個策略的買賣點與績效）
 
-- 網頁檢視器：`docs/`（GitHub Pages 發佈後網址為 `https://roxign.github.io/stock/`）
+以元大台灣50（0050）的 50 檔成分股為對象，研究多種交易策略，並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：每個策略都附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
+
 - 研究方向（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
-  - `kd_macd_rule` — KD + MACD 規則型
-  - `kd_macd_dl` — KD + MACD 結合小型深度學習模型
+  - `kdj_macd_rule` — KDJ + MACD 規則型
+  - `kdj_macd_dl` — KDJ + MACD 結合小型深度學習模型
   - `trend` — 趨勢追蹤
   - `mean_reversion` — 均值回歸
 
@@ -33,7 +34,7 @@
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
-.venv/Scripts/python evaluate.py --family kd_macd_rule --periods is,oos   # 單一方向的排行
+.venv/Scripts/python evaluate.py --family kdj_macd_rule --periods is,oos   # 單一方向的排行
 .venv/Scripts/python build_site.py --download                            # 更新股價並重建網頁資料
 .venv/Scripts/python -m http.server 8765 -d docs                         # 本機預覽 http://localhost:8765
 ```

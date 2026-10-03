@@ -149,6 +149,17 @@ export function metrics(eq, dates, i0, i1, invested, trades, orders) {
   return m;
 }
 
+export function sma(x, n) {
+  const out = new Float64Array(x.length).fill(NaN);
+  let s = 0;
+  for (let i = 0; i < x.length; i++) {
+    s += x[i];
+    if (i >= n) s -= x[i - n];
+    if (i >= n - 1) out[i] = s / n;
+  }
+  return out;
+}
+
 export function ema(x, span) {
   const a = 2 / (span + 1), out = new Float64Array(x.length);
   out[0] = x[0];
@@ -156,8 +167,8 @@ export function ema(x, span) {
   return out;
 }
 
-export function twKd(stock, n = 9) {
-  const { h, l, c } = stock, len = c.length, k = new Float64Array(len), d = new Float64Array(len);
+export function twKdj(stock, n = 9) {
+  const { h, l, c } = stock, len = c.length, k = new Float64Array(len), d = new Float64Array(len), j = new Float64Array(len);
   let kp = 50, dp = 50;
   for (let i = 0; i < len; i++) {
     let hh = -Infinity, ll = Infinity;
@@ -167,8 +178,9 @@ export function twKd(stock, n = 9) {
     dp = (dp * 2) / 3 + kp / 3;
     k[i] = kp;
     d[i] = dp;
+    j[i] = 3 * kp - 2 * dp;
   }
-  return { k, d };
+  return { k, d, j };
 }
 
 export function macd(close, fast = 12, slow = 26, signal = 9) {

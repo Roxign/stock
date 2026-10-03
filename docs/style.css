@@ -15,6 +15,7 @@
   --s3: #1baf7a;
   --s4: #eda100;
   --s5: #e87ba4;
+  --s7: #4a3aa7;
   --up: #e34948;
   --down: #008300;
   --div-pos: #e34948;
@@ -42,6 +43,7 @@
     --s3: #199e70;
     --s4: #c98500;
     --s5: #d55181;
+  --s7: #9085e9;
     --up: #e66767;
     --down: #0ca30c;
     --div-pos: #e66767;
@@ -68,6 +70,7 @@
   --s3: #199e70;
   --s4: #c98500;
   --s5: #d55181;
+  --s7: #9085e9;
   --up: #e66767;
   --down: #0ca30c;
   --div-pos: #e66767;
@@ -225,6 +228,24 @@ table.heat td:not(.ref):not(.na):hover { outline: 2px solid var(--ink); }
 .chart-eq { height: 300px; }
 .pane-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); padding: 4px 4px 2px; min-height: 24px; font-variant-numeric: tabular-nums; }
 .pane-legend b { color: var(--ink); font-weight: 600; }
+.ma-legend { gap: 6px; }
+.ma-tog {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ma-tog b { font-variant-numeric: tabular-nums; }
+.ma-tog[aria-pressed="false"] { opacity: 0.45; }
+.ma-tog[aria-pressed="false"] .swatch { border-top-style: dotted; }
 .pane-legend .item { display: inline-flex; align-items: center; gap: 6px; }
 
 .trades { margin-top: 16px; }
