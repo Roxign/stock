@@ -1,4 +1,4 @@
-import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js";
+import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=4";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
@@ -9,6 +9,9 @@ const PERIOD_SHORT = { full: "全期", is: "樣本內", oos: "樣本外", custom
 const PERIOD_TITLE = { full: "2010 至今", is: "2010–2020：策略開發與調參用", oos: "2021 至今：開發時沒看過的資料，用來驗證", custom: "自選起訖日" };
 
 const MAS = [[5, "週線", "--s1"], [10, "雙週線", "--s2"], [20, "月線", "--s3"], [60, "季線", "--s4"], [120, "半年線", "--s5"], [240, "年線", "--s7"]];
+
+// Pages caches files for 10 minutes; revalidate data so a new build shows up right away.
+const FRESH = { cache: "no-cache" };
 
 let S;
 const stockCache = new Map();
@@ -243,7 +246,7 @@ const hideTip = () => ($("tip").hidden = true);
 // ---------- stock view ----------
 async function loadStock(code) {
   if (!stockCache.has(code)) {
-    stockCache.set(code, fetch(`data/stocks/${code}.json`).then((r) => r.json()).then((st) => {
+    stockCache.set(code, fetch(`data/stocks/${code}.json`, FRESH).then((r) => r.json()).then((st) => {
       st.kd = twKdj(st);
       st.ma = Object.fromEntries(MAS.map(([n]) => [n, sma(st.c, n)]));
       st.macd = macd(Float64Array.from(st.c));
@@ -525,7 +528,7 @@ async function toggleCode(btn) {
   const box = btn.closest(".strat-card").querySelector(".code-box");
   if (!box.hidden) { box.hidden = true; return; }
   if (!box.dataset.loaded) {
-    const text = await fetch(btn.dataset.code).then((r) => r.text());
+    const text = await fetch(btn.dataset.code, FRESH).then((r) => r.text());
     box.innerHTML = `<div class="actions"><button class="btn" type="button">複製程式碼</button><a class="btn" href="${btn.dataset.code}" download="${btn.dataset.sid}.txt">下載 .txt</a></div><pre class="code"><code></code></pre>`;
     box.querySelector("code").textContent = text;
     box.querySelector("button").onclick = async (e) => {
@@ -540,7 +543,7 @@ async function openDoc(title, path) {
   $("docTitle").textContent = title;
   $("docBody").innerHTML = "<p class='muted'>載入中…</p>";
   $("docDialog").showModal();
-  const md = await fetch(path).then((r) => r.text());
+  const md = await fetch(path, FRESH).then((r) => r.text());
   $("docBody").innerHTML = marked.parse(md);
   $("docBody").querySelectorAll("a").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
 }
@@ -565,7 +568,7 @@ function initTheme() {
 // ---------- boot ----------
 async function main() {
   initTheme();
-  S = await fetch("data/summary.json").then((r) => r.json());
+  S = await fetch("data/summary.json", FRESH).then((r) => r.json());
   S.folds ??= [];
   S.cv ??= {};
   configure(S.engine);
