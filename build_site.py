@@ -24,6 +24,38 @@ PERIODS = ("full", "is", "oos")
 FOLDS = cv.FOLDS
 
 
+def latest_block(sid, board, cv_rows, cv_meta):
+    """Markdown table of the current numbers, prepended to each description so hand-written figures can't go stale."""
+    def cell(row):
+        if row is None:
+            return "—"
+        return f"{row['cagr_med']:.1%} / {row['mdd_med']:.1%} / {row['sharpe_med']:.2f}"
+
+    def row(i, p):
+        hit = board[(board["id"] == i) & (board["period"] == p)]
+        return None if hit.empty else hit.iloc[0]
+
+    lines = [
+        f"**最新回測（每次更新資料時自動產生，{DATA_DATE}）**：50 檔中位數，年化報酬 / 最大回撤 / Sharpe",
+        "",
+        "| | 樣本內 2010–2020 | 樣本外 2021–今 |",
+        "|---|---|---|",
+        f"| 本策略 | {cell(row(sid, 'is'))} | {cell(row(sid, 'oos'))} |",
+        f"| 買進持有 | {cell(row('buy_hold', 'is'))} | {cell(row('buy_hold', 'oos'))} |",
+    ]
+    by_id = {r["id"]: r for r in cv_rows}
+    if sid in by_id:
+        r = by_id[sid]
+        text = f"交叉驗證 8 折（固定參數）：Sharpe 勝過買進持有 {r['folds_sharpe']}/8 折、年化報酬勝 {r['folds_cagr']}/8 折、最大回撤較小 {r['folds_mdd']}/8 折"
+        cvr = by_id.get(f"{sid}~cv")
+        if cvr:
+            how = "每折重新訓練" if cv_meta[sid]["mode"] == "purged" else "每折改用其他 7 折最佳參數"
+            text += f"；{how}：Sharpe 勝 {cvr['folds_sharpe']}/8 折、回撤較小 {cvr['folds_mdd']}/8 折"
+        lines += ["", text + "。"]
+    lines += ["", "下方說明中的數字是研究當時的結果，資料更新後可能略有差異，請以本表與總覽頁為準。", "", "---", ""]
+    return "\n".join(lines)
+
+
 def cross_validated(strategy, data, use_cache):
     """cv.cross_validate slimmed to per-fold metrics, cached because retune/purged CV re-runs the strategy many times."""
     path = POS_CACHE / f"{strategy['id']}~cv.pkl"
@@ -103,6 +135,7 @@ def main():
     meta = [dict(b, research=None) for b in BASELINES]
     for s in strategies:
         m = {k: s[k] for k in ("id", "label", "family", "description")}
+        m["description"] = latest_block(s["id"], board, cv_rows, cv_meta) + s["description"]
         m["multicharts"] = m["research"] = None
         if s.get("multicharts"):
             dst = DOCS / "multicharts" / f"{s['id']}.txt"
