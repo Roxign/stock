@@ -21,10 +21,26 @@ PERIODS = {
 }
 PERIOD_LABELS = {"full": "全期 2010–今", "is": "樣本內 2010–2020", "oos": "樣本外 2021–今"}
 
+# Blocked k-fold cross-validation: 8 contiguous ~2-year folds, each a different market regime.
+FOLDS = {
+    "f1": ("2010-01-01", "2011-12-31"),
+    "f2": ("2012-01-01", "2013-12-31"),
+    "f3": ("2014-01-01", "2015-12-31"),
+    "f4": ("2016-01-01", "2017-12-31"),
+    "f5": ("2018-01-01", "2019-12-31"),
+    "f6": ("2020-01-01", "2021-12-31"),
+    "f7": ("2022-01-01", "2023-12-31"),
+    "f8": ("2024-01-01", None),
+}
+FOLD_LABELS = {"f1": "2010–11", "f2": "2012–13", "f3": "2014–15", "f4": "2016–17", "f5": "2018–19", "f6": "2020–21",
+               "f7": "2022–23", "f8": "2024–今"}
+ALL_PERIODS = PERIODS | FOLDS
+PERIOD_LABELS |= {f: f"第{i + 1}折 {FOLD_LABELS[f]}" for i, f in enumerate(FOLDS)}
+
 
 def period_bounds(index, period):
     """Return (i0, i1) positional bounds inclusive, or None if the stock has no tradable bars in the period."""
-    start, end = PERIODS[period]
+    start, end = ALL_PERIODS[period]
     if len(index) <= WARMUP:
         return None
     i0 = max(index.searchsorted(pd.Timestamp(start)), WARMUP)

@@ -46,6 +46,16 @@ def dl_gate(data):
     return gate_from(core.cached_walk_forward(data)[0])
 
 
+def cv_floor(data, folds):
+    """Purged k-fold CV of dl_floor (evaluate.py --cv): each fold traded with a model trained without it. Not tradable."""
+    return floor_from(core.cached_purged_cv(data, folds)[0])
+
+
+def cv_gate(data, folds):
+    """Purged k-fold CV of dl_gate (evaluate.py --cv): each fold traded with a model trained without it. Not tradable."""
+    return gate_from(core.cached_purged_cv(data, folds)[0])
+
+
 def base_rule(data):
     """The KDJ+MACD rule both DL variants build on, without any model (for the DL-vs-rule comparison)."""
     return {code: pd.Series(core.base_rule(core.indicator_frame(df)), index=df.index) for code, df in data.items()}
@@ -106,11 +116,16 @@ STRATEGIES = [
             "**規則**：永遠至少持有 0.5 部位（底倉）。當週線等效 KDJ+MACD 規則為持有，**或** MLP 判斷該股相對強（機率 ≥ 訓練集第 40 百分位）時加到 1.0；"
             "兩者都不支持時減回 0.5。不會完全出場，所以『完整交易』只有 1 筆；加減碼次數請看『部位調整次數』（樣本外中位數 26 次，約每年 4–5 次）。\n\n"
             "**想法**：在長期上漲的台股權值股中，完全空手的機會成本很高；保留一半底倉，只在『技術面不支持且相對弱勢』時減碼，用來降低回撤。\n"
-            "結果：樣本內 Sharpe 0.52（買進持有 0.49），樣本外 CAGR 31.4% 低於買進持有 35.7%、MDD 少 2 個百分點、Sharpe 1.06 對 1.10。\n"
+            "結果：樣本內 Sharpe 0.52（買進持有 0.49），樣本外 CAGR 31.4% 低於買進持有 35.7%、MDD 少 2 個百分點、Sharpe 1.06 對 1.10。\n\n"
+            "**交叉驗證（8 折，purged）**：每一折改由「其他 7 折 + 2008–09 年」訓練的同一個模型交易（剔除標籤區間與該折重疊的樣本，折後再空出 60 根 K 棒），部位對應不變。"
+            "Sharpe 只在 2022–23 勝過買進持有（0.53 對 0.51）、2010–11 平手，其他 6 折落後，多頭折落後最多；MDD 5/8 折較小，但同持股比的固定曝險與別檔訊號控制組回撤一樣小。"
+            "對別檔訊號控制組只勝 4/8 折、對沒有模型的「規則 + 底倉」2/8 折——看不出模型在任何市場狀態有穩定加值。"
+            "這是穩健性檢查（前面幾折的模型用到未來資料訓練），不是可交易的績效。\n"
             + _RESULTS + _COMMON
         ),
         "multicharts": "multicharts/kdj_macd_dl_floor.txt",
         "positions": dl_floor,
+        "cv_positions": cv_floor,
     },
     {
         "id": "kdj_macd_dl_gate",
@@ -121,11 +136,15 @@ STRATEGIES = [
             "規則空手 **且** MLP 判斷相對弱（< 第 20 百分位）→ 部位 0（空手）；其他情況 → 0.5。\n\n"
             "**想法**：MLP 扮演『否決賣訊』的角色——KDJ+MACD 規則空手時，只有相對弱勢的股票才真正出場，相對強勢的股票續抱。\n"
             "結果：樣本內 CAGR 9.5% 幾乎追平買進持有（9.6%）、MDD 少 2.6 個百分點；樣本外 29.5% 對 35.7%，Sharpe 1.04 對 1.10。"
-            "樣本內這是 DL 相對控制組最明顯的地方（別檔訊號 CAGR 7.7–8.1%），但樣本外控制組為 25.4–30.1%，優勢不穩定。\n"
+            "樣本內這是 DL 相對控制組最明顯的地方（別檔訊號 CAGR 7.7–8.1%），但樣本外控制組為 25.4–30.1%，優勢不穩定。\n\n"
+            "**交叉驗證（8 折，purged）**：方法同半倉底倉版（每折由沒看過該折的模型交易，purge 標籤重疊樣本 + 60 根 K 棒 embargo）。"
+            "Sharpe 0/8 折勝過買進持有（空頭的 2010–11、2022–23 接近持平：0.04 對 0.05、0.49 對 0.51），MDD 6/8 折較小；"
+            "對別檔訊號控制組 5/8 折、對沒有模型的「規則 + 底倉」1/8 折，與控制組無法區分。這是穩健性檢查，不是可交易的績效。\n"
             + _RESULTS + _COMMON
         ),
         "multicharts": "multicharts/kdj_macd_dl_gate.txt",
         "positions": dl_gate,
+        "cv_positions": cv_gate,
     },
     {
         "id": "kdj_macd_dl_base",

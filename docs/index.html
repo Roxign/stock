@@ -33,6 +33,9 @@
     <section id="view-overview" hidden>
       <div class="filters">
         <div class="seg" id="ovPeriod" role="group" aria-label="期間"></div>
+        <label class="field">或選交叉驗證的某一折
+          <select id="ovFold"></select>
+        </label>
         <label class="field">熱力圖指標
           <select id="ovMetric">
             <option value="cagr_diff">年化報酬 − 買進持有</option>
@@ -50,6 +53,14 @@
       <div class="table-wrap"><table id="board" class="data"></table></div>
       <p class="note" id="dcaNote"></p>
 
+      <section id="cvSection">
+        <h2>交叉驗證（8 折）</h2>
+        <p class="note">把 2010 至今切成 8 段、每段約 2 年，各自是不同的市場狀態（例如 2011、2015、2018、2020、2022 的下跌），每段都用 100 萬本金重新回測，避免結論只被最近的大多頭左右。格子是該段 50 檔的中位數；<span class="pos">紅色＝勝過同段的買進持有</span>、<span class="neg">綠色＝輸給買進持有</span>。<br>
+        標示「交叉驗證」的列是更嚴格的版本：規則型策略在每一段都改用「在其他 7 段表現最好的參數」，深度學習則在每一段都用「完全沒看過這一段資料」訓練出的模型。點折的標題可看該段的完整排行，點格子可看該段的個股回測。</p>
+        <div class="seg" id="cvMetric" role="group" aria-label="交叉驗證指標"></div>
+        <div class="table-wrap heat-wrap"><table id="cvTable" class="heat cv"></table></div>
+      </section>
+
       <h2>逐檔比較</h2>
       <p class="note">每格是該策略在該股票的表現。<span class="legend-ramp"><span>劣於買進持有</span><i class="ramp"></i><span>優於買進持有</span></span> 點格子可看該股回測細節。</p>
       <div class="table-wrap heat-wrap"><table id="heat" class="heat"></table></div>
@@ -62,6 +73,9 @@
           <datalist id="stockList"></datalist>
         </label>
         <div class="seg" id="stPeriod" role="group" aria-label="期間"></div>
+        <label class="field">交叉驗證折
+          <select id="stFold"></select>
+        </label>
         <span id="customRange" class="field-row" hidden>
           <input type="date" id="fromDate" aria-label="起始日"> – <input type="date" id="toDate" aria-label="結束日">
         </span>

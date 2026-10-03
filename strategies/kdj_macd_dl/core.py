@@ -9,6 +9,8 @@ Everything here is causal:
     (purge), normalised with statistics of that training set only;
   * training is deterministic (fixed seeds, fixed sample order, deterministic torch ops, 2 threads), so truncating
     the data at any date reproduces exactly the same positions before that date.
+purged_cv() at the bottom is the exception on purpose: purged k-fold cross-validation for evaluate.py --cv only
+(each fold traded by a model trained on all OTHER folds, later ones included); it never feeds the published positions.
 """
 
 from __future__ import annotations
@@ -416,3 +418,100 @@ def cached_walk_forward(data):
         _MEMO.clear()
         _MEMO[key] = walk_forward(data)
     return _MEMO[key]
+
+
+# ---------------------------------------------------------------- purged k-fold cross-validation (evaluation only)
+
+def _trainable(s):
+    """Samples usable for training at all: walk_forward's filters without its date cut (label complete, `known`)."""
+    return ((np.arange(len(s["y"])) >= WARM) & ~np.isnan(s["y"]) & ~np.isnat(s["known"])
+            & ~np.isnan(s["X"]).any(axis=1))
+
+
+def _ts(x):
+    return pd.Timestamp(x).to_datetime64().astype("datetime64[ns]")
+
+
+def purge_masks(stocks, start, end, last):
+    """Per stock (train, purged, embargoed) boolean masks for a test fold [start, end] (end None = last date).
+
+    Label window of sample t = from the first bar after t to `known` (the date the LAST stock's 60-bar window on that
+    date closes, so the whole cross-sectional median is inside it). Purge = every trainable sample whose date t or
+    label window falls in the fold, i.e. [t, known] overlaps [start, end] (all samples inside the fold, the last
+    ~H+1 bars before it, and the fold's last bar whose window starts after it); embargo = the first HORIZON bars of
+    each stock after the fold ends (their lagged / EMA / MA features still contain fold bars)."""
+    fs, fe = _ts(start), (last if end is None else _ts(end))
+    out = []
+    for s in stocks:
+        d = s["index"].values
+        ok = _trainable(s)
+        overlap = ok & (d <= fe) & (s["known"] >= fs)
+        emb = np.zeros(len(d), bool)
+        j = np.searchsorted(d, fe, side="right")
+        emb[j : j + HORIZON] = True
+        emb &= ok & ~overlap
+        out.append((ok & ~overlap & ~emb, overlap, emb))
+    return out
+
+
+def purged_cv(data, folds, trainer=None, seeds=SEEDS, stocks=None):
+    """Purged blocked k-fold CV of the published model (Lopez de Prado 2018, ch. 7). NOT tradable: fold f is traded
+    with a model that saw every other fold, later ones included; the walk-forward `positions` remain the real record.
+
+    For each fold f = (start, end) of `folds`:
+      * train the same 3-net ensemble (same labels, filters, epochs, sample order) on every trainable sample of the
+        other folds and of the 2008-2009 warm-up, minus the purge and embargo of purge_masks();
+      * mu/sd and the Q_LO/Q_HI thresholds come from that training set only; seed base = first year of the fold
+        (so the last fold's model is bit-identical to walk_forward's model of that year);
+      * apply the model to every bar of the stock and smooth with the same 10-day EMA, so the EMA entering f is
+        warmed up by model f itself (never by a model that was trained on f), then keep it on f's DECISION bars:
+        bars whose fill (the next bar's open) lies in f, i.e. the last bar before f and every bar of f but its last.
+    Returns (signals, models) shaped like walk_forward; signals also carry the column 'fold'."""
+    if stocks is None:
+        stocks, names = prepare(data)
+    else:
+        stocks, names = stocks
+    trainer = trainer or (lambda Z, y, sb: train_ensemble(Z, y, sb, seeds))
+    last = max(s["index"].values[-1] for s in stocks)
+    cols = {s["code"]: {k: np.full(len(s["index"]), np.nan) for k in ("p", "ps", "q_lo", "q_hi")} for s in stocks}
+    fold_of = {s["code"]: np.full(len(s["index"]), None, dtype=object) for s in stocks}
+    models = {}
+    for f, (start, end) in folds.items():
+        masks = purge_masks(stocks, start, end, last)
+        Xtr = np.concatenate([s["X"][m[0]] for s, m in zip(stocks, masks)])
+        ytr = np.concatenate([s["y"][m[0]] for s, m in zip(stocks, masks)])
+        mu, sd = standardize_fit(Xtr)
+        Ztr = standardize_apply(Xtr, mu, sd)
+        ens = trainer(Ztr, ytr, pd.Timestamp(start).year)
+        q_lo, q_hi = np.quantile(predict_ensemble(ens, Ztr), [Q_LO, Q_HI])
+        models[f] = dict(models=ens, mu=mu, sd=sd, q_lo=float(q_lo), q_hi=float(q_hi), n_train=int(len(ytr)),
+                         n_purged=int(sum(m[1].sum() for m in masks)), n_embargo=int(sum(m[2].sum() for m in masks)),
+                         names=names)
+        fs, fe = _ts(start), (last if end is None else _ts(end))
+        for s in stocks:
+            d = s["index"].values
+            fill = np.r_[d[1:], d[-1:]]            # the last bar of the data counts as its own fill date
+            m = (fill >= fs) & (fill <= fe)
+            if not m.any():
+                continue
+            p = pd.Series(predict_ensemble(ens, standardize_apply(s["X"], mu, sd)))
+            ps = p.ewm(span=SMOOTH, adjust=False).mean()
+            c = cols[s["code"]]
+            c["p"][m], c["ps"][m] = p.to_numpy()[m], ps.to_numpy()[m]
+            c["q_lo"][m], c["q_hi"][m] = q_lo, q_hi
+            fold_of[s["code"]][m] = f
+    signals = {s["code"]: pd.DataFrame({**cols[s["code"]], "base": base_rule(s["ind"]), "fold": fold_of[s["code"]]},
+                                       index=s["index"]) for s in stocks}
+    return signals, models
+
+
+_CV_MEMO: dict = {}
+
+
+def cached_purged_cv(data, folds):
+    """purged_cv() memoised on the input data and folds (floor and gate share one CV training run)."""
+    key = (_fingerprint(data), tuple((f, str(a), str(b)) for f, (a, b) in folds.items()))
+    if key not in _CV_MEMO:
+        _CV_MEMO.clear()
+        _CV_MEMO[key] = purged_cv(data, folds)
+    return _CV_MEMO[key]

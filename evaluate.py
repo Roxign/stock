@@ -5,10 +5,12 @@
   python evaluate.py --ids trend_sma_half --lookahead    # also run the truncation lookahead check
   python evaluate.py --family X --controls               # add B1 固定曝險 / B2 別檔訊號 / B3 波動目標 controls
   python evaluate.py --family X --portfolio              # 50-stock single-account scoreboard vs 0050
+  python evaluate.py --family X --cv                     # 8-fold blocked cross-validation (stocklab/cv.py)
 """
 
 import argparse
 
+from stocklab import cv
 from stocklab.controls import evaluate_controls
 from stocklab.data import RAW_DIR, download, load_all
 from stocklab.runner import (check_lookahead, compute_positions, discover, evaluate, leaderboard, portfolio_results,
@@ -22,6 +24,7 @@ ap.add_argument("--lookahead", action="store_true")
 ap.add_argument("--cached", action="store_true", help="reuse cached positions")
 ap.add_argument("--controls", action="store_true", help="also evaluate the B1/B2/B3 controls for each strategy")
 ap.add_argument("--portfolio", action="store_true", help="also print the single-account portfolio scoreboard")
+ap.add_argument("--cv", action="store_true", help="8-fold cross-validation: fixed params, plus retune/purged when supported")
 args = ap.parse_args()
 
 if not any(RAW_DIR.glob("*.csv")):
@@ -47,3 +50,17 @@ if args.controls:
 print_leaderboard(leaderboard(results, labels, periods))
 if args.portfolio:
     print_portfolio(portfolio_results(strategies, data, periods))
+if args.cv:
+    fold_res = evaluate(strategies, data, cv.FOLDS, use_cache=True)
+    ids = [s["id"] for s in strategies]
+    for s in strategies:
+        out = cv.cross_validate(s, data)
+        if out:
+            fold_res[f"{s['id']}~cv"] = out["results"]
+            ids.append(f"{s['id']}~cv")
+            if out["chosen"]:
+                print(f"\n{s['id']} 每折選出的參數（grid {out['grid_size']} 組）:")
+                for f, p in out["chosen"].items():
+                    print(f"  {f}: {p}")
+    rows, bh = cv.fold_table(fold_res, ["dca"] + ids, labels)
+    cv.print_fold_table(rows, bh)

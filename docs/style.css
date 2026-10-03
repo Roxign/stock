@@ -19,7 +19,7 @@
   --up: #e34948;
   --down: #008300;
   --div-pos: #e34948;
-  --div-neg: #2a78d6;
+  --div-neg: #008300;
   --div-mid: #f0efec;
   --vol: rgba(137, 135, 129, 0.35);
   font-family: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", "PingFang TC", sans-serif;
@@ -47,7 +47,7 @@
     --up: #e66767;
     --down: #0ca30c;
     --div-pos: #e66767;
-    --div-neg: #3987e5;
+    --div-neg: #0ca30c;
     --div-mid: #383835;
     --vol: rgba(137, 135, 129, 0.3);
   }
@@ -74,7 +74,7 @@
   --up: #e66767;
   --down: #0ca30c;
   --div-pos: #e66767;
-  --div-neg: #3987e5;
+  --div-neg: #0ca30c;
   --div-mid: #383835;
   --vol: rgba(137, 135, 129, 0.3);
 }
@@ -196,6 +196,7 @@ table.data tbody tr:hover { background: var(--surface-2); }
 
 .name-cell { display: inline-flex; align-items: center; gap: 8px; }
 .swatch { display: inline-block; width: 18px; height: 0; border-top: 3px solid currentColor; flex: none; }
+.swatch-svg { display: inline-block; width: 20px; height: 6px; flex: none; vertical-align: middle; }
 .swatch.dash { border-top-style: dashed; }
 .swatch.dot { border-top-style: dotted; }
 .family { color: var(--muted); font-size: 12px; }
@@ -214,6 +215,14 @@ table.heat td.ref { background: transparent; color: var(--ink-2); cursor: defaul
 table.heat td.na { color: var(--muted); cursor: default; background: transparent; }
 table.heat td:not(.ref):not(.na):hover { outline: 2px solid var(--ink); }
 .heat-wrap { max-height: 70vh; }
+#cvMetric { margin: 4px 0 10px; }
+table.heat.cv td { min-width: 64px; }
+table.heat.cv tbody th { white-space: normal; min-width: 180px; max-width: 260px; }
+table.heat.cv tr.cv-row th { padding-left: 22px; font-weight: 400; }
+table.heat.cv tr.cv-row th::before { content: "↳ "; color: var(--muted); }
+table.heat.cv td.tally { background: transparent; color: var(--ink); cursor: default; font-weight: 600; }
+table.heat.cv td.tally:hover { outline: none; }
+table.heat.cv thead .link-btn { color: var(--muted); font-weight: 500; text-decoration: underline dotted; }
 
 .legend-ramp { display: inline-flex; align-items: center; gap: 6px; margin: 0 6px; }
 .ramp { display: inline-block; width: 90px; height: 10px; border-radius: 4px; background: linear-gradient(90deg, var(--div-neg), var(--div-mid), var(--div-pos)); }

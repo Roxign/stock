@@ -9,6 +9,8 @@ Each rule is a small 0/1 state machine evaluated bar by bar, mirrored line for l
 See RESEARCH.md for the experiments behind the parameter choices.
 """
 
+from functools import partial
+
 import numpy as np
 import pandas as pd
 
@@ -74,6 +76,27 @@ def _each(fn):
     return lambda data: {code: fn(df) for code, df in data.items()}
 
 
+def _build(fn):
+    """CV hook: params dict -> positions fn. build(published defaults) reproduces `positions` exactly."""
+    return lambda params: _each(partial(fn, **params))
+
+
+# ---------------------------------------------------------------- CV grids (neighbourhoods explored in RESEARCH.md 3.9)
+COMBO_DEFAULTS = dict(rsi_len=14, os_level=25, ob_level=70, max_hold=60, drop_days=5, drop_pct=0.10, exit_ma=10)
+COMBO_GRID = (
+    # sub-system A: RSI(14) entry x exit level x time stop (27)
+    [dict(COMBO_DEFAULTS, os_level=a, ob_level=b, max_hold=h) for a in (20, 25, 30) for b in (65, 70, 75) for h in (50, 60, 70)]
+    # sub-system B: drop threshold x exit MA, A at defaults (8), plus the 3-day 9% variant (1)
+    + [dict(COMBO_DEFAULTS, drop_pct=p, exit_ma=m) for p in (0.08, 0.10, 0.12) for m in (5, 10, 20) if (p, m) != (0.10, 10)]
+    + [dict(COMBO_DEFAULTS, drop_days=3, drop_pct=0.09)]
+)
+SWING_DEFAULTS = dict(fast_len=2, buy_level=10, slow_len=14, sell_level=75)
+SWING_GRID = [dict(SWING_DEFAULTS, buy_level=b, sell_level=s) for b in (5, 10, 15) for s in (70, 75, 80)]
+CLASSIC_DEFAULTS = dict(rsi_len=2, buy_level=5, trend_len=200, exit_len=5)
+# textbook variants only: Connors reports RSI(2) entry thresholds of 2, 5 and 10
+CLASSIC_GRID = [dict(CLASSIC_DEFAULTS, buy_level=b) for b in (2, 5, 10)]
+
+
 # ---------------------------------------------------------------- descriptions
 COMMON_NOTES = """
 **共同注意事項**
@@ -106,6 +129,8 @@ COMBO_DESC = """
 
 **樣本外（2021–2026/10，只跑一次）**：CAGR 6.3%、MDD −26.8%、Sharpe 0.49，與樣本內相近；但同期買進持有 CAGR 35.7%、Sharpe 1.10，只有 14% 的股票 Sharpe 勝過買進持有。主要獲利來自 2025 年 4 月的全市場急跌反彈。
 
+**交叉驗證（8 折，2010 起每兩年一折）**：各折 Sharpe 中位數只有 2010–11（0.37，買進持有 0.05）與 2014–15（0.48 vs 0.29）勝過買進持有，這兩折都是盤整或下跌中夾著一次全市場恐慌；其餘 6 折落後，8 折平均 0.45 vs 0.65。2022–23 折中 2022 年雖然少跌（+1.3% vs −8.3%），但錯過 2023 年的大漲。各折回撤約為買進持有的一半，但這主要來自持有率低（同樣持有率固定持有的回撤更小）。用其他 7 折重新挑參數（36 組鄰近參數）也沒有改善（平均 0.44），問題不在參數，而在策略本質就是「恐慌時才出手」。
+
 **弱點**
 
 - 大部分時間空手（約 84%），多頭年份遠遠落後買進持有；樣本內的報酬有相當比例來自 2011、2015、2020 等**全市場恐慌後的反彈**。個股自己的利空急跌，事後報酬和平常差不多。
@@ -124,6 +149,8 @@ SWING_DESC = """
 加上 200 日均線趨勢濾網反而變差，因此不使用。
 
 **樣本外（2021–2026/10，只跑一次）**：CAGR 24.2%、MDD −42.1%、Sharpe 1.00、持有時間 87%（買進持有：35.7%、−45.5%、1.10）；Sharpe 勝過買進持有的股票占 30%，勝過定期定額 CAGR 的占 70%。2022 年空頭時中位數 −10.8%，比買進持有的 −8.3% 還差。
+
+**交叉驗證（8 折，2010 起每兩年一折）**：8 折中有 5 折 Sharpe 中位數略勝買進持有，但每折只多 0.01–0.05；輸的 3 折（2018–19、2022–23、2024–今）差距較大（0.10–0.16），8 折平均 0.63 vs 0.65。逐檔逐折只有 47% 勝過買進持有，和擲硬幣差不多。用其他 7 折重新挑參數時，幾乎每折都選「RSI(2) < 5 買、RSI(14) > 80 賣」（持有率約 94%，更接近買進持有），表示擇時沒有穩定的價值。
 
 **弱點**
 
@@ -144,6 +171,8 @@ Larry Connors《Short Term Trading Strategies That Work》中最有名的規則�
 
 **為什麼放這個**：它在美股 ETF 上很有名，但在台股個股上，**每筆交易的平均優勢（扣成本前約 0.95%）大半被 0.585% 的來回成本吃掉**。零成本時 Sharpe 有 0.44。若手續費打 2.8 折，Sharpe 約 0.23；再假設證交稅只有 0.1%（ETF 稅率），約 0.33，仍然不如買進持有。
 次日開盤進場**不是**問題：以訊號當天收盤進場與次日開盤進場的報酬幾乎一樣。
+
+**交叉驗證（8 折，2010 起每兩年一折）**：只有 2014–15 一折 Sharpe 中位數勝過買進持有（0.52 vs 0.29），8 折平均 0.16 vs 0.65；教科書的其他進場門檻 RSI(2) < 2 / < 10 的 8 折平均更差（0.13 / 0.03）。訊號本身比「拿別檔股票的訊號」好，但優勢大多被交易成本吃掉。
 """ + COMMON_NOTES
 
 STRATEGIES = [
@@ -154,6 +183,8 @@ STRATEGIES = [
         "description": COMBO_DESC.strip(),
         "multicharts": "multicharts/mean_reversion_combo.txt",
         "positions": _each(combo_positions),
+        "param_grid": COMBO_GRID,
+        "build": _build(combo_positions),
     },
     {
         "id": "mean_reversion_swing",
@@ -162,6 +193,8 @@ STRATEGIES = [
         "description": SWING_DESC.strip(),
         "multicharts": "multicharts/mean_reversion_swing.txt",
         "positions": _each(swing_positions),
+        "param_grid": SWING_GRID,
+        "build": _build(swing_positions),
     },
     {
         "id": "mean_reversion_rsi2_classic",
@@ -170,5 +203,7 @@ STRATEGIES = [
         "description": CLASSIC_DESC.strip(),
         "multicharts": "multicharts/mean_reversion_rsi2_classic.txt",
         "positions": _each(classic_positions),
+        "param_grid": CLASSIC_GRID,
+        "build": _build(classic_positions),
     },
 ]

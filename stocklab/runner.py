@@ -9,7 +9,8 @@ from . import backtest as bt
 from .data import ROOT
 
 POS_CACHE = ROOT / "data" / "positions"
-FAMILY_ORDER = ["kdj_macd_rule", "kdj_macd_dl", "trend", "mean_reversion"]
+FAMILY_ORDER = ["kdj_macd_rule", "kdj_macd_rebound", "kdj_macd_dl", "dl_position", "dl_revenue_flow", "dl_market_state",
+                "dl_cross_stock", "dl_trend_labels", "trend", "mean_reversion"]
 BASELINES = [
     {"id": "buy_hold", "label": "買進持有", "family": "基準", "description": "期初一次全部買進，持有到期末，不做任何操作。", "multicharts": None},
     {"id": "dca", "label": "定期定額", "family": "基準", "description": "把本金平均分成每月一份，於每月第一個交易日開盤買進，持有到期末。另計算資金加權報酬率 (XIRR)。", "multicharts": None},

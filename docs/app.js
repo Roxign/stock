@@ -2,8 +2,9 @@ import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, 
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
-const FAMILY_SLOT = { "KDJ+MACD 規則": 1, "KDJ+MACD+深度學習": 2, "趨勢追蹤": 3, "均值回歸": 4 };
-const LINE_STYLES = ["solid", "dash", "dot"];
+const FAMILY_SLOT = { "KDJ+MACD 規則": 1, "KDJ+MACD+深度學習": 2, "趨勢追蹤": 3, "均值回歸": 4, "KDJ+MACD 反彈": 5, "深度學習 2.0": 7 };
+const LINE_STYLES = ["solid", "dash", "dot", "longdash", "sparsedot"];
+const DASH = { solid: "", dash: "4 3", dot: "1.5 2.5", longdash: "9 3", sparsedot: "1.5 5" };
 const PERIOD_SHORT = { full: "全期", is: "樣本內", oos: "樣本外", custom: "自訂" };
 const PERIOD_TITLE = { full: "2010 至今", is: "2010–2020：策略開發與調參用", oos: "2021 至今：開發時沒看過的資料，用來驗證", custom: "自選起訖日" };
 
@@ -11,7 +12,7 @@ const MAS = [[5, "週線", "--s1"], [10, "雙週線", "--s2"], [20, "月線", "-
 
 let S;
 const stockCache = new Map();
-const state = { tab: "overview", period: "oos", metric: "cagr_diff", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
+const state = { tab: "overview", period: "oos", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
 const shown = new Set(["buy_hold", "dca"]);
 const shownMa = new Set(MAS.map(([n]) => n));
 try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
@@ -23,7 +24,19 @@ const pct = (x, d = 1) => (isNum(x) ? (x * 100).toFixed(d) + "%" : "—");
 const spct = (x, d = 1) => (isNum(x) ? (x > 0 ? "+" : "") + (x * 100).toFixed(d) + "%" : "—");
 const num = (x, d = 2) => (isNum(x) ? x.toFixed(d) : "—");
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const strat = (id) => S.strategies.find((s) => s.id === id);
+const strat = (id) => S.strategies.find((s) => s.id === id) || cvStrat(id);
+const baseId = (id) => id.replace(/~cv$/, "");
+const isFold = (p) => S.folds.some((f) => f.id === p);
+
+function cvStrat(id) {
+  if (!id?.endsWith("~cv")) return undefined;
+  const b = S.strategies.find((s) => s.id === baseId(id));
+  return b && { ...b, id, label: `${b.label}（交叉驗證）`, cv: true };
+}
+
+function foldOptions(el) {
+  el.innerHTML = `<option value="">—</option>` + S.folds.map((f, i) => `<option value="${f.id}">第${i + 1}折 ${esc(f.label)}</option>`).join("");
+}
 const isBaseline = (s) => s.family === "基準";
 
 function assignStyles() {
@@ -35,12 +48,12 @@ function assignStyles() {
     else {
       if (!(s.family in FAMILY_SLOT)) FAMILY_SLOT[s.family] = Math.min(nextSlot++, 5);
       const k = (perFamily[s.family] = (perFamily[s.family] ?? -1) + 1);
-      Object.assign(s, { colorVar: `--s${FAMILY_SLOT[s.family]}`, style: LINE_STYLES[k % 3] });
+      Object.assign(s, { colorVar: `--s${FAMILY_SLOT[s.family]}`, style: LINE_STYLES[k % LINE_STYLES.length] });
     }
   }
 }
 
-const swatch = (s) => `<span class="swatch ${s.style === "solid" ? "" : s.style}" style="color:var(${s.colorVar})"></span>`;
+const swatch = (s) => `<svg class="swatch-svg" viewBox="0 0 20 6" aria-hidden="true" style="color:var(${s.colorVar})"><line x1="1.5" y1="3" x2="18.5" y2="3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${DASH[s.style] || ""}"/></svg>`;
 
 // ---------- routing ----------
 function readHash() {
@@ -49,7 +62,7 @@ function readHash() {
   const p = new URLSearchParams(q);
   state.tab = ["overview", "stock", "strategies"].includes(parts[0]) ? parts[0] : "overview";
   if (parts[0] === "stock" && parts[1] && S.stocks.some((x) => x.code === parts[1])) state.code = parts[1];
-  if (p.get("p") in PERIOD_SHORT) state.period = p.get("p");
+  if (p.get("p") in PERIOD_SHORT || isFold(p.get("p"))) state.period = p.get("p");
   if (p.get("s") && strat(p.get("s"))) state.focus = p.get("s");
   if (p.get("m")) state.metric = p.get("m");
   if (p.get("from")) state.from = p.get("from");
@@ -111,7 +124,9 @@ const BOARD_COLS = [
 function renderOverview() {
   const p = ovPeriod();
   seg($("ovPeriod"), ["full", "is", "oos"].map((k) => [k, PERIOD_SHORT[k]]), p, (v) => { state.period = v; writeHash(); renderOverview(); });
+  $("ovFold").value = isFold(p) ? p : "";
   $("ovMetric").value = state.metric;
+  renderCv();
 
   const { key, asc } = state.sort;
   const rows = S.board.filter((r) => r.period === p).sort((a, b) => {
@@ -122,7 +137,7 @@ function renderOverview() {
   const body = rows.map((r) => {
     const s = strat(r.id);
     const self = (k) => (r.id === "buy_hold" && k.startsWith("beat_bh")) || (r.id === "dca" && k === "beat_dca") || (r.id === "dca" && ["orders_med", "win_med", "exposure_med"].includes(k));
-    return `<tr class="${isBaseline(s) ? "baseline" : ""}"><td><span class="name-cell">${swatch(s)}<a class="link-btn" href="#/strategies?s=${esc(s.id)}">${esc(s.label)}</a><span class="family">${esc(s.family)}</span></span></td>${BOARD_COLS.map(([k, , f]) => `<td>${self(k) ? "—" : f(r[k])}</td>`).join("")}</tr>`;
+    return `<tr class="${isBaseline(s) ? "baseline" : ""}"><td><span class="name-cell">${swatch(s)}<a class="link-btn" href="#/strategies?s=${esc(baseId(s.id))}">${esc(s.label)}</a><span class="family">${esc(s.family)}</span></span></td>${BOARD_COLS.map(([k, , f]) => `<td>${self(k) ? "—" : f(r[k])}</td>`).join("")}</tr>`;
   }).join("");
   $("board").innerHTML = head + `<tbody>${body}</tbody>`;
   $("board").querySelectorAll("th[data-sort]").forEach((th) => (th.onclick = () => {
@@ -171,6 +186,45 @@ function renderHeat(p) {
     showTip(e, `<b>${st.code} ${esc(st.name)}</b><br>${esc(strat(td.dataset.sid).label)}<br>年化 ${pct(m.cagr)}（買進持有 ${pct(bh.cagr)}）<br>Sharpe ${num(m.sharpe)}（${num(bh.sharpe)}）<br>最大回撤 ${pct(m.mdd)}（${pct(bh.mdd)}）${isNum(m.trades) ? `<br>交易 ${m.trades} 次，勝率 ${pct(m.win, 0)}` : ""}`);
   };
   t.onmouseleave = hideTip;
+}
+
+const CV_METRICS = {
+  sharpe: { label: "Sharpe", fmt: (x) => num(x), clamp: 0.5 },
+  cagr: { label: "年化報酬", fmt: (x) => pct(x), clamp: 0.15 },
+  mdd: { label: "最大回撤", fmt: (x) => pct(x), clamp: 0.15 },
+};
+
+function renderCv() {
+  const T = S.cv_table;
+  $("cvSection").hidden = !T;
+  if (!T) return;
+  const key = state.cvMetric;
+  const M = CV_METRICS[key];
+  seg($("cvMetric"), Object.entries(CV_METRICS).map(([k, v]) => [k, v.label]), key, (v) => { state.cvMetric = v; renderCv(); });
+  const folds = S.folds;
+  const tallyHead = `<th>Sharpe<br>勝折數</th><th>報酬<br>勝折數</th><th>回撤較小<br>折數</th><th>個股×折<br>Sharpe 勝率</th>`;
+  const head = `<thead><tr><th>策略</th>${folds.map((f, i) => `<th><button type="button" class="link-btn" data-fold="${f.id}" title="看第${i + 1}折的完整排行">${esc(f.label)}</button></th>`).join("")}${tallyHead}</tr></thead>`;
+  const bhRow = `<tr class="baseline"><th>${swatch(strat("buy_hold"))} 買進持有</th>${folds.map((f) => `<td class="ref">${M.fmt(T.bh[f.id][key])}</td>`).join("")}<td class="ref" colspan="4">基準</td></tr>`;
+  const rows = T.rows.map((r) => {
+    const s = strat(r.id);
+    const cells = folds.map((f) => {
+      const v = r.folds[f.id]?.[key], b = T.bh[f.id][key];
+      if (!isNum(v)) return `<td class="na">—</td>`;
+      const d = v - b, w = Math.min(Math.abs(d) / M.clamp, 1) * 85;
+      const link = s.cv ? `data-fold="${f.id}"` : `data-fold="${f.id}" data-sid="${s.id}"`;
+      return `<td tabindex="0" ${link} title="${esc(s.label)}｜${esc(f.label)}：${M.fmt(v)}（買進持有 ${M.fmt(b)}）" style="background:color-mix(in oklab, var(${d >= 0 ? "--div-pos" : "--div-neg"}) ${w.toFixed(0)}%, var(--div-mid))">${M.fmt(v)}</td>`;
+    }).join("");
+    const tallies = `<td class="tally">${r.folds_sharpe}/8</td><td class="tally">${r.folds_cagr}/8</td><td class="tally">${r.folds_mdd}/8</td><td class="tally">${pct(r.stock_fold_sharpe, 0)}</td>`;
+    return `<tr class="${s.cv ? "cv-row" : ""}"><th>${s.cv ? "" : swatch(s) + " "}${esc(s.cv ? "交叉驗證" + (S.cv[baseId(s.id)]?.mode === "purged" ? "（每折重新訓練）" : "（每折重新選參數）") : s.label)}</th>${cells}${tallies}</tr>`;
+  }).join("");
+  const t = $("cvTable");
+  t.innerHTML = head + `<tbody>${bhRow}${rows}</tbody>`;
+  const go = (el) => {
+    if (el.dataset.sid) location.hash = `#/stock/${state.code}?s=${el.dataset.sid}&p=${el.dataset.fold}`;
+    else { state.period = el.dataset.fold; writeHash(); renderOverview(); $("board").scrollIntoView({ block: "start" }); }
+  };
+  t.onclick = (e) => { const el = e.target.closest("[data-fold]"); if (el) go(el); };
+  t.onkeydown = (e) => { const el = e.target.closest("td[data-fold]"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); go(el); } };
 }
 
 function showTip(e, html) {
@@ -256,6 +310,7 @@ async function renderStock() {
     renderStock();
   });
   $("customRange").hidden = state.period !== "custom";
+  $("stFold").value = isFold(state.period) ? state.period : "";
 
   const st = await loadStock(state.code);
   if (st.code !== state.code) return;
@@ -299,7 +354,7 @@ function chartOptions(showTime) {
   };
 }
 
-const LS = { solid: 0, dot: 1, dash: 2 };
+const LS = { solid: 0, dot: 1, dash: 2, longdash: 3, sparsedot: 4 };
 
 function drawCharts(st, i0, i1, runs) {
   const up = cssVar("--up"), down = cssVar("--down");
@@ -516,6 +571,10 @@ async function main() {
   $("dataDate").textContent = `資料至 ${S.stocks[0].end}・成分股 ${S.data_date}`;
   $("footDate").textContent = S.data_date;
   $("ovMetric").onchange = () => { state.metric = $("ovMetric").value; writeHash(); renderOverview(); };
+  foldOptions($("ovFold"));
+  foldOptions($("stFold"));
+  $("ovFold").onchange = () => { state.period = $("ovFold").value || "oos"; writeHash(); renderOverview(); };
+  $("stFold").onchange = () => { state.period = $("stFold").value || "oos"; writeHash(); renderStock(); };
   $("docClose").onclick = () => $("docDialog").close();
   initStockControls();
   readHash();

@@ -11,6 +11,9 @@ filled by the engine at the next bar's open:
                      equal-weighted index of all stocks, built only from returns up to each date).
 
 See RESEARCH.md for the experiments behind these choices.
+
+k-fold CV: every entry has `param_grid` + `build` (stocklab/cv.py "retune" mode); build(defaults) reproduces the
+published positions exactly. Grids are the neighbourhoods scanned in RESEARCH.md (Donchian 32 combos, SMA/band 24).
 """
 
 import numpy as np
@@ -69,17 +72,41 @@ def donchian(data, n_in=DC_ENTRY, n_out=DC_EXIT):
     return out
 
 
-def sma_half(data):
-    return {code: 0.5 + 0.5 * trend_state(df["close"]) for code, df in data.items()}
+def sma_half(data, n=MA_N, k=BAND_K):
+    return {code: 0.5 + 0.5 * trend_state(df["close"], n, k) for code, df in data.items()}
 
 
-def dual_market(data):
-    mkt = trend_state(ew_index(data))
+def dual_market(data, n=MA_N, k=BAND_K):
+    mkt = trend_state(ew_index(data), n, k)
     out = {}
     for code, df in data.items():
         m = mkt.reindex(df.index).fillna(0.0)
-        out[code] = 0.5 * trend_state(df["close"]) + 0.5 * m
+        out[code] = 0.5 * trend_state(df["close"], n, k) + 0.5 * m
     return out
+
+
+# ---- k-fold cross-validation hooks (stocklab/cv.py "retune" mode) ----
+# Each grid is the neighbourhood actually explored in RESEARCH.md and contains the published defaults.
+# Donchian: the entry x exit scan of section 5.2 (exit <= entry), 32 combinations.
+DONCHIAN_DEFAULT = {"entry": DC_ENTRY, "exit": DC_EXIT}
+DONCHIAN_GRID = [{"entry": e, "exit": x} for e in (60, 100, 120, 150, 200, 250)
+                 for x in (20, 40, 60, 80, 100, 120) if x <= e]
+# SMA + volatility band (section 7): SMA length 63-252 x band 0.25-1.0 one-month sigma, 24 combinations.
+# k = 0 (no band) is left out: it was clearly broken by whipsaws in every row of the section 7 scan.
+TREND_DEFAULT = {"n": MA_N, "k": BAND_K}
+TREND_GRID = [{"n": n, "k": k} for n in (63, 105, 126, 168, 210, 252) for k in (0.25, 0.5, 0.75, 1.0)]
+
+
+def build_donchian(params):
+    return lambda data: donchian(data, n_in=params["entry"], n_out=params["exit"])
+
+
+def build_sma_half(params):
+    return lambda data: sma_half(data, n=params["n"], k=params["k"])
+
+
+def build_dual_market(params):
+    return lambda data: dual_market(data, n=params["n"], k=params["k"])
 
 
 _COMMON = """
@@ -104,6 +131,8 @@ DESC_DONCHIAN = """
 **樣本內（2010–2020）中位數**：CAGR 5.1%、最大回撤 −38%、Sharpe 0.42、持有率約 45%（買進持有：9.6%、−46%、0.51）。
 
 **樣本外（2021–2026/10）中位數**：CAGR 22.4%、最大回撤 −41%、Sharpe 0.80（買進持有：35.7%、−46%、1.10；定期定額 25.3%）。樣本外三個趨勢版本中表現最差：多頭中常在高點附近才進場、回檔一季才出場，回撤沒有明顯縮小。
+
+**交叉驗證（2010–2026 每兩年一折，共 8 折）**：固定參數 120/60 在 8 折中 Sharpe 與報酬都是 0 折勝過買進持有，最大回撤則 8 折都較小（例如 2010–11 為 −20% vs −40.5%）。多數急跌段跌得最少，但同一折內的反彈幾乎沒跟上（2012–13 Sharpe 0.06 vs 0.70），連 2014–15、2018–19、2022–23 這些有大跌的折也一樣輸。用其他 7 折重新挑參數會改選出場較慢的 60/60～120/120，仍是 0/8 折勝、回撤優勢變小；發布的 120/60 在 32 組格點中排第 16，不被交叉驗證支持。
 
 **特性與注意事項**
 - 一半以上的時間空手，回撤明顯較小，但報酬也較低；在 V 型反彈（2012、2019、2020）會大幅落後買進持有。
@@ -130,6 +159,8 @@ DESC_SMA_HALF = """
 
 **樣本外（2021–2026/10）中位數**：CAGR 31.1%、最大回撤 −38.5%、Sharpe 1.05（買進持有：35.7%、−45.5%、1.10；定期定額 25.3%）。少賺約 4.6 個百分點／年，換到約 7 個百分點較小的回撤；86% 的股票勝過定期定額。
 
+**交叉驗證（2010–2026 每兩年一折，共 8 折）**：固定參數只有 2016–17 一折 Sharpe 勝過買進持有（0.81 vs 0.80，等於平手），報酬 0/8 折勝，最大回撤 8/8 折較小（各折少約 3–9 個百分點）。2010–11、2014–15、2018–19、2022–23 這些有大跌的折，Sharpe 與報酬也都輸：跌得少，但同一折內的反彈跟得慢。用其他 7 折重新挑參數，每一折都選到更慢的 252 日／1.0σ，勝 2/8 折、差距都在 0.04 以內；整個參數格點的 8 折平均 Sharpe 都在 0.54–0.62，低於買進持有的 0.65。
+
 **特性與注意事項**
 - 這是「降低回撤」的工具，不是「打敗大盤」的工具：多頭年份會落後買進持有。
 - 因為永遠至少持有 50%，「完整交易」只會有 1 筆；實際的加減碼請看「部位調整次數」，中位數每年約 2 次。
@@ -152,6 +183,8 @@ DESC_DUAL = """
 
 **樣本外（2021–2026/10）中位數**：CAGR 29.7%、最大回撤 −38.2%、Sharpe 1.05（買進持有：35.7%、−45.5%、1.10；定期定額 25.3%）。
 
+**交叉驗證（2010–2026 每兩年一折，共 8 折）**：固定參數 Sharpe 與報酬都是 0/8 折勝過買進持有，最大回撤 8/8 折較小（各折少約 3–12 個百分點）。大盤濾網在急跌段最有效（2015 年 4–8 月 −8.6% vs 買進持有 −24.1%；2025 年初 −10.9% vs −28.0%），但大盤轉多的訊號慢，反彈段落後很多；2010–11 被來回洗，Sharpe −0.24 是三個版本最差。用其他 7 折重新挑參數多半選 252 日均線，Sharpe 仍 0/8 折勝。
+
 **特性與注意事項**
 - 大盤指數是由目前 50 檔成分股等權重組成，與加權指數或 0050（台積電權重極高）不同；MultiCharts 版本只能用加權指數或 0050 當作 data2 近似。
 - 50 檔共用同一個大盤訊號，大盤轉空時所有股票會同時減碼，屬於系統性的避險，而非個股選擇。
@@ -165,6 +198,8 @@ STRATEGIES = [
         "description": DESC_DONCHIAN.strip(),
         "multicharts": "multicharts/trend_donchian.txt",
         "positions": donchian,
+        "param_grid": DONCHIAN_GRID,
+        "build": build_donchian,
     },
     {
         "id": "trend_sma_half",
@@ -173,6 +208,8 @@ STRATEGIES = [
         "description": DESC_SMA_HALF.strip(),
         "multicharts": "multicharts/trend_sma_half.txt",
         "positions": sma_half,
+        "param_grid": TREND_GRID,
+        "build": build_sma_half,
     },
     {
         "id": "trend_dual_market",
@@ -181,5 +218,7 @@ STRATEGIES = [
         "description": DESC_DUAL.strip(),
         "multicharts": "multicharts/trend_dual_market.txt",
         "positions": dual_market,
+        "param_grid": TREND_GRID,
+        "build": build_dual_market,
     },
 ]
