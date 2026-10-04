@@ -1,4 +1,4 @@
-import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=4";
+import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=5";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
@@ -581,6 +581,7 @@ async function main() {
   $("ovFold").onchange = () => { state.period = $("ovFold").value || "oos"; writeHash(); renderOverview(); };
   $("stFold").onchange = () => { state.period = $("stFold").value || "oos"; writeHash(); renderStock(); };
   $("docClose").onclick = () => $("docDialog").close();
+  document.querySelectorAll(".callout [data-doc]").forEach((b) => (b.onclick = () => openDoc(b.dataset.title, b.dataset.doc)));
   initStockControls();
   readHash();
   $("loading").remove();

@@ -132,6 +132,13 @@ def main():
     for sub in ("data/stocks", "multicharts", "research"):
         shutil.rmtree(DOCS / sub, ignore_errors=True)
 
+    for name in ("diagnosis.md", "dl_literature.md", "data_sources.md"):
+        src = ROOT / "research" / name
+        if src.exists():
+            dst = DOCS / "research" / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+
     meta = [dict(b, research=None) for b in BASELINES]
     for s in strategies:
         m = {k: s[k] for k in ("id", "label", "family", "description")}

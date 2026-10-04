@@ -224,6 +224,10 @@ table.heat.cv td.tally { background: transparent; color: var(--ink); cursor: def
 table.heat.cv td.tally:hover { outline: none; }
 table.heat.cv thead .link-btn { color: var(--muted); font-weight: 500; text-decoration: underline dotted; }
 
+.callout { margin-top: 16px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; font-size: 14px; color: var(--ink-2); }
+.callout strong { color: var(--ink); margin-right: 6px; }
+.callout-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
 .legend-ramp { display: inline-flex; align-items: center; gap: 6px; margin: 0 6px; }
 .ramp { display: inline-block; width: 90px; height: 10px; border-radius: 4px; background: linear-gradient(90deg, var(--div-neg), var(--div-mid), var(--div-pos)); }
 

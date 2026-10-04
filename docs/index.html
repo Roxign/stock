@@ -6,10 +6,10 @@
   <title>台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 成分股交易策略回測：KD/MACD 規則、深度學習、趨勢追蹤、均值回歸，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=4"></script>
+  <script type="module" src="app.js?v=5"></script>
 </head>
 <body>
   <header class="top">
@@ -44,6 +44,14 @@
             <option value="cagr">年化報酬</option>
           </select>
         </label>
+      </div>
+
+      <div class="callout">
+        <strong>為什麼策略贏不了買進持有？</strong>主因不是手續費，而是策略「持股比較少」，而技術指標幾乎沒有擇時能力；空手的日子股票多半還在漲，只有在空頭年空手才真的避開下跌。另外，這 50 檔是今天的成分股（事後挑出的贏家），讓買進持有的基準特別高。
+        <span class="callout-links">
+          <button type="button" class="btn" data-doc="research/diagnosis.md" data-title="問題診斷與改進方向">診斷報告</button>
+          <button type="button" class="btn" data-doc="research/dl_literature.md" data-title="深度學習交易策略文獻回顧">深度學習文獻回顧</button>
+        </span>
       </div>
 
       <h2>策略排行</h2>
