@@ -18,35 +18,44 @@ from stocklab import cv
 from stocklab.data import RAW_DIR, ROOT, download
 from stocklab.etf import CODES as ETF_CODES, ETFS
 from stocklab.portfolio import BENCH_LABELS
-from stocklab.runner import (BASELINES, POS_CACHE, discover, evaluate, fees_of, leaderboard, load_everything,
-                             portfolio_results, print_leaderboard, print_portfolio)
-from stocklab.universe import CODES as STOCK_CODES, DATA_DATE, NAMES, WEIGHTS
+from stocklab.runner import (BASELINES, POS_CACHE, discover, evaluate, fees_of, leaderboard, load_everything, pos_path,
+                             portfolio_results, print_leaderboard, print_portfolio, runs_on_extra, universes_of)
+from stocklab.universe import CODES as STOCK_CODES, DATA_DATE, EXTRA_CODES, EXTRA_NAMES, NAMES, SECTORS, WEIGHTS
 
 DOCS = ROOT / "docs"
 PERIODS = ("full", "is", "oos")
 FOLDS = cv.FOLDS
-UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
+UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "extra": ("代表股（另 55 檔）", EXTRA_CODES),
+             "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
+DOCS_COPIED = ("diagnosis.md", "dl_literature.md", "data_sources.md", "short_rules.md", "etf_data.md", "macro_fx_rates.md",
+               "signals.md")
 
 
-def latest_block(sid, board, cv_rows, cv_meta):
+def latest_block(sid, board, cv_rows, cv_meta, extra_board=None, data_end=None):
     """Markdown table of the current numbers, prepended to each description so hand-written figures can't go stale."""
     def cell(row):
         if row is None:
             return "—"
         return f"{row['cagr_med']:.1%} / {row['mdd_med']:.1%} / {row['sharpe_med']:.2f}"
 
-    def row(i, p):
-        hit = board[(board["id"] == i) & (board["period"] == p)]
+    def row(i, p, b=board):
+        hit = b[(b["id"] == i) & (b["period"] == p)]
         return None if hit.empty else hit.iloc[0]
 
+    what = "ETF" if (board["universe"] == "etfs").all() else "50 檔"
     lines = [
-        f"**最新回測（每次更新資料時自動產生，{DATA_DATE}）**：50 檔中位數，年化報酬 / 最大回撤 / Sharpe",
+        f"**最新回測（每次更新資料時自動產生，資料至 {data_end}）**：{what}中位數，年化報酬 / 最大回撤 / Sharpe",
         "",
         "| | 樣本內 2010–2020 | 樣本外 2021–今 |",
         "|---|---|---|",
         f"| 本策略 | {cell(row(sid, 'is'))} | {cell(row(sid, 'oos'))} |",
         f"| 買進持有 | {cell(row('buy_hold', 'is'))} | {cell(row('buy_hold', 'oos'))} |",
     ]
+    if extra_board is not None and row(sid, "is", extra_board) is not None:
+        lines += [
+            f"| 本策略：另 55 檔代表股（開發時沒用過） | {cell(row(sid, 'is', extra_board))} | {cell(row(sid, 'oos', extra_board))} |",
+            f"| 買進持有：另 55 檔代表股 | {cell(row('buy_hold', 'is', extra_board))} | {cell(row('buy_hold', 'oos', extra_board))} |",
+        ]
     by_id = {r["id"]: r for r in cv_rows}
     if sid in by_id:
         r = by_id[sid]
@@ -61,7 +70,11 @@ def latest_block(sid, board, cv_rows, cv_meta):
 
 
 def name_of(code):
-    return NAMES.get(code) or ETFS[code]["name"]
+    return NAMES.get(code) or EXTRA_NAMES.get(code) or ETFS[code]["name"]
+
+
+def kind_of(code):
+    return "etf" if code in ETF_CODES else "extra" if code in EXTRA_CODES else "stock"
 
 
 def portfolio_export(pf_results):
@@ -124,7 +137,7 @@ def write_json(path, obj):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cached", action="store_true")
+    ap.add_argument("--cached", action="store_true", help="reuse cached positions and cross-validation (daily update)")
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--families", help="comma-separated strategies/<family> folders (default: all)")
     args = ap.parse_args()
@@ -132,6 +145,7 @@ def main():
     if args.download or not any(RAW_DIR.glob("*.csv")):
         download()
     data = load_everything()
+    data_end = max(df.index[-1] for df in data.values()).strftime("%Y-%m-%d")
     strategies = discover(args.families.split(",") if args.families else None)
     results = evaluate(strategies, data, PERIODS + FOLDS, use_cache=args.cached)
     labels = {b["id"]: b["label"] for b in BASELINES} | {s["id"]: s["label"] for s in strategies}
@@ -164,7 +178,7 @@ def main():
     for sub in ("data/stocks", "multicharts", "research"):
         shutil.rmtree(DOCS / sub, ignore_errors=True)
 
-    for name in ("diagnosis.md", "dl_literature.md", "data_sources.md", "short_rules.md", "etf_data.md"):
+    for name in DOCS_COPIED:
         src = ROOT / "research" / name
         if src.exists():
             dst = DOCS / "research" / name
@@ -177,8 +191,10 @@ def main():
         m = {k: s[k] for k in ("id", "label", "family", "description")}
         m["universe"] = u
         m["portfolio_weights"] = bool(s.get("weights"))
+        m["extra"] = runs_on_extra(s, data) and pos_path(s["id"], "extra").exists()
         key = "etfs" if u == "etfs" else "stocks"
-        m["description"] = latest_block(s["id"], board[board["universe"] == key], cv_tables[key]["rows"], cv_meta) + s["description"]
+        m["description"] = latest_block(s["id"], board[board["universe"] == key], cv_tables[key]["rows"], cv_meta,
+                                        board[board["universe"] == "extra"] if m["extra"] else None, data_end) + s["description"]
         m["multicharts"] = m["research"] = None
         if s.get("multicharts"):
             dst = DOCS / "multicharts" / f"{s['id']}.txt"
@@ -193,12 +209,18 @@ def main():
             m["research"] = f"research/{s['family_dir']}.md"
         meta.append(m)
 
-    positions = {s["id"]: pd.read_pickle(POS_CACHE / f"{s['id']}.pkl") for s in strategies}
+    positions = {}
+    for s in strategies:
+        positions[s["id"]] = {}
+        for u in universes_of(s, data):
+            if pos_path(s["id"], u).exists():
+                positions[s["id"]].update(pd.read_pickle(pos_path(s["id"], u)))
     for code, df in data.items():
         write_json(DOCS / "data" / "stocks" / f"{code}.json", {
             "code": code,
             "name": name_of(code),
-            "kind": "etf" if code in ETF_CODES else "stock",
+            "kind": kind_of(code),
+            "sector": SECTORS.get(code),
             "fees": fees_of(code),
             "d": [d.strftime("%Y-%m-%d") for d in df.index],
             "o": df["open"].round(4).tolist(),
@@ -212,6 +234,7 @@ def main():
     write_json(DOCS / "data" / "summary.json", {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "data_date": DATA_DATE,
+        "data_end": data_end,
         "engine": {"capital": bt.CAPITAL, "buy_fee": bt.BUY_FEE, "sell_fee": bt.SELL_FEE, "warmup": bt.WARMUP},
         "periods": {p: {"start": s, "end": e, "label": bt.PERIOD_LABELS[p]} for p, (s, e) in bt.ALL_PERIODS.items()},
         "folds": [{"id": f, "label": bt.FOLD_LABELS[f]} for f in FOLDS],
@@ -219,7 +242,7 @@ def main():
         "cv_tables": cv_tables,
         "universes": {u: {"label": lab, "codes": list(codes)} for u, (lab, codes) in UNIVERSES.items()},
         "strategies": meta,
-        "stocks": [{"code": c, "name": name_of(c), "kind": "etf" if c in ETF_CODES else "stock", "weight": WEIGHTS.get(c),
+        "stocks": [{"code": c, "name": name_of(c), "kind": kind_of(c), "sector": SECTORS.get(c), "weight": WEIGHTS.get(c),
                     "start": df.index[0].strftime("%Y-%m-%d"), "end": df.index[-1].strftime("%Y-%m-%d")} for c, df in data.items()],
         "board": board.to_dict("records"),
         "portfolio": portfolio_export(pf_results),

@@ -449,6 +449,53 @@ def download_taifex_pc(refresh=False):
     _set_manifest(path, START)
 
 
+def update_fm(dataset, data_id, path, lookback_days=10):
+    """Daily update of one cached FinMind series: re-fetch from `lookback_days` before its last date and replace that
+    window. Returns the number of rows dated after the previous last date (None if not cached: download_all first)."""
+    if not path.exists():
+        return None
+    old = _read_csv(path)
+    if old.empty:
+        return None
+    last = pd.Timestamp(old["date"].max())
+    start = last - pd.Timedelta(days=lookback_days)
+    new = finmind(dataset, data_id, start=start.strftime("%Y-%m-%d"))
+    if new.empty:
+        return 0
+    new = new[[c for c in old.columns if c in new.columns]]
+    keep = old[pd.to_datetime(old["date"]) < start]
+    _save_fm(pd.concat([keep, new], ignore_index=True), path)
+    return int((pd.to_datetime(new["date"]) > last).sum())
+
+
+def update_recent(codes=None, lookback_days=10, stocks=True):
+    """Daily update with few requests: Yahoo re-fetched whole (one call), TAIFEX from the last cached month, every
+    cached FinMind series from `lookback_days` before its last date. Monthly revenue only from the 1st to the 15th
+    (when new figures appear) or when its cache is over 20 days old."""
+    download_yahoo(refresh=True)
+    for key, (ds, data_id) in FM_MARKET.items():
+        if FM_FIRST.get(key, START) is None:  # static tables
+            continue
+        print(f"FinMind market {key}: +{update_fm(ds, data_id, _fm_path('market', key), lookback_days)} rows", flush=True)
+    download_taifex_pc(refresh=True)
+    if stocks:
+        today = datetime.now(TPE)
+        for key, ds in FM_STOCK.items():
+            n = 0
+            for c in codes or CODES:
+                p = _fm_path("stock", key, c)
+                if key == "revenue" and today.day > 15 and p.exists() and time.time() - p.stat().st_mtime < 20 * 86400:
+                    continue
+                n += update_fm(ds, c, p, lookback_days) or 0
+            print(f"FinMind {key}: +{n} rows", flush=True)
+    _cache.clear()
+
+
+def last_session() -> pd.Timestamp:
+    """Latest TWSE trading date in the cached FinMind TAIEX series (complete calendar, updated by update_recent)."""
+    return pd.Timestamp(_read_csv(_fm_path("market", "taiex"))["date"].max())
+
+
 def download_all(refresh=False, codes=None, stocks=True):
     """Download every source into data/external/ (only what is missing unless refresh=True). Unregistered FinMind
     allows ~300 requests / hour; a full per-stock download is ~300 requests, so expect it to pause for the limit."""

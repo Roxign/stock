@@ -15,7 +15,9 @@ const FRESH = { cache: "no-cache" };
 
 let S;
 const stockCache = new Map();
-const state = { tab: "overview", period: "oos", universe: "stocks", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
+const state = { tab: "signals", period: "oos", universe: "stocks", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false },
+  sigUniverse: "all", sigView: "all", sigNear: 0.03, sigQPeriod: "oos" };
+const TABS = ["signals", "overview", "stock", "strategies"];
 const shown = new Set(["buy_hold", "dca"]);
 const shownMa = new Set(MAS.map(([n]) => n));
 try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
@@ -30,8 +32,9 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 const strat = (id) => S.strategies.find((s) => s.id === id) || cvStrat(id);
 const baseId = (id) => id.replace(/~cv$/, "");
 const isFold = (p) => S.folds.some((f) => f.id === p);
-const universeOf = (code) => (S.stocks.find((x) => x.code === code)?.kind === "etf" ? "etfs" : "stocks");
-const inUniverse = (s, u) => isBaseline(s) || (s.universe || "stocks") === u || s.universe === "all";
+const KIND_UNIVERSE = { etf: "etfs", extra: "extra", stock: "stocks" };
+const universeOf = (code) => KIND_UNIVERSE[S.stocks.find((x) => x.code === code)?.kind] || "stocks";
+const inUniverse = (s, u) => isBaseline(s) || (u === "extra" ? !!s.extra : (s.universe || "stocks") === u || s.universe === "all");
 const appliesTo = (s, st) => isBaseline(s) || !!st.pos?.[s.id];
 
 function cvStrat(id) {
@@ -63,10 +66,10 @@ const swatch = (s) => `<svg class="swatch-svg" viewBox="0 0 20 6" aria-hidden="t
 
 // ---------- routing ----------
 function readHash() {
-  const [path, q = ""] = (location.hash.slice(2) || "overview").split("?");
+  const [path, q = ""] = (location.hash.slice(2) || "signals").split("?");
   const parts = path.split("/");
   const p = new URLSearchParams(q);
-  state.tab = ["overview", "stock", "strategies"].includes(parts[0]) ? parts[0] : "overview";
+  state.tab = TABS.includes(parts[0]) ? parts[0] : "signals";
   if (parts[0] === "stock" && parts[1] && S.stocks.some((x) => x.code === parts[1])) state.code = parts[1];
   if (p.get("p") in PERIOD_SHORT || isFold(p.get("p"))) state.period = p.get("p");
   if (p.get("s") && strat(p.get("s"))) state.focus = p.get("s");
@@ -91,12 +94,13 @@ function writeHash() {
 const ovPeriod = () => (state.period === "custom" ? "oos" : state.period);
 
 function render() {
-  for (const t of ["overview", "stock", "strategies"]) $(`view-${t}`).hidden = t !== state.tab;
+  for (const t of TABS) $(`view-${t}`).hidden = t !== state.tab;
   document.querySelectorAll(".tabs a").forEach((a) => {
     if (a.dataset.tab === state.tab) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   });
-  if (state.tab === "overview") renderOverview();
+  if (state.tab === "signals") renderSignals();
+  else if (state.tab === "overview") renderOverview();
   else if (state.tab === "stock") renderStock();
   else renderStrategies();
 }
@@ -211,8 +215,8 @@ function pfMeta(id) {
 
 function renderPortfolio(p) {
   const P = S.portfolio;
-  $("pfSection").hidden = !P;
-  if (!P) return;
+  $("pfSection").hidden = !P || state.universe === "extra";
+  if ($("pfSection").hidden) return;
   if (!pfInit) {
     for (const s of S.strategies) if (s.portfolio_weights) pfShown.add(s.id);
     pfInit = true;
@@ -305,6 +309,198 @@ function showTip(e, html) {
 }
 const hideTip = () => ($("tip").hidden = true);
 
+// ---------- signals ----------
+let sigPromise = null, SG = null, fxChart = null;
+const loadSignals = () => (sigPromise ??= fetch("data/signals.json", FRESH).then((r) => (r.ok ? r.json() : null)).catch(() => null).then((g) => (SG = g)));
+const SIG_VIEWS = [["all", "全部"], ["buy", "買方（買進、回補）"], ["sell", "賣方（賣出、放空）"]];
+const NEAR_OPTS = [[0.01, "±1%"], [0.03, "±3%"], [0.05, "±5%"], [0.1, "±10%"]];
+const fmtPx = (x) => (isNum(x) ? (x >= 1000 ? x.toLocaleString("en-US", { maximumFractionDigits: 2 }) : String(+x.toFixed(2))) : "—");
+const posText = (x) => (Math.abs(x) < 1e-6 ? "空手" : x > 0 ? `多 ${pct(x, 0)}` : `空 ${pct(-x, 0)}`);
+const actChip = (a, side) => `<span class="act ${side > 0 ? "buy" : side < 0 ? "sell" : "hold"}">${esc(a)}</span>`;
+const sideOk = (side) => state.sigView === "all" || (state.sigView === "buy" ? side > 0 : side < 0);
+const trigCond = (t) => (t.lo == null && t.hi == null ? "任何收盤價" : t.lo == null ? `≤ ${fmtPx(t.hi)}` : t.hi == null ? `≥ ${fmtPx(t.lo)}` : `${fmtPx(t.lo)}～${fmtPx(t.hi)}`);
+const trigDist = (t) => (t.lo == null && t.hi == null ? "必定觸發" : t.d === 0 ? "平盤即觸發" : spct(t.d));
+const trigText = (t) => `收盤 ${trigCond(t)} → ${actChip(t.a, t.side)} <span class="muted">(${trigDist(t)})</span>`;
+const sinceText = (x) => (x ? `${x.date} 起 ${posText(x.level)}，進場 ${fmtPx(x.px)}，${x.days} 天，<span class="${x.ret >= 0 ? "pos" : "neg"}">${spct(x.ret)}</span>` : "—");
+
+let follow = null; // Set of followed strategy ids; null = all
+try { const f = JSON.parse(localStorage.getItem("follow")); if (Array.isArray(f)) follow = new Set(f); } catch {}
+const follows = (sid) => !follow || follow.has(sid);
+const saveFollow = () => { try { localStorage.setItem("follow", JSON.stringify(follow ? [...follow] : null)); } catch {} };
+
+function quality(sid, kind, period = "oos") {
+  return SG?.strategies[sid]?.quality?.[kind]?.[period];
+}
+
+function qualityCell(sid, kind, side) {
+  const q = quality(sid, kind);
+  if (!q) return "—";
+  const v = side > 0 ? q.buy20 : q.sell20;
+  const hit = side > 0 ? q.buy_up20 : q.sell_dn20;
+  if (!isNum(v)) return "—";
+  return `<span class="${v >= 0 ? "pos" : "neg"}">${spct(v)}</span> <span class="muted">${side > 0 ? "漲" : "跌"} ${pct(hit, 0)}</span>`;
+}
+
+function renderMacro(m) {
+  const box = $("macroCard");
+  if (!m) { box.hidden = true; return; }
+  box.hidden = false;
+  const chg = (x) => `<span class="${x >= 0 ? "pos" : "neg"}">${spct(x)}</span>`;
+  const items = [
+    ["美元/台幣", m.usdtwd.toFixed(3), `20 日 ${chg(m.usdtwd20)}`],
+    ["美元/日圓", m.usdjpy.toFixed(2), `20 日 ${chg(m.usdjpy20)}`],
+    ["日圓/台幣", m.jpytwd.toFixed(4), `20 日 ${chg(m.jpytwd20)}`],
+    ["聯準會利率", m.fed.toFixed(2) + "%", ""],
+    ["日銀利率", m.boj.toFixed(2) + "%", ""],
+    ["美日利差", m.diff.toFixed(2), `半年 ${isNum(m.diff120) ? (m.diff120 > 0 ? "+" : "") + m.diff120.toFixed(2) : "—"}`],
+  ];
+  box.innerHTML = `<div class="macro-items">${items.map(([k, v, sub]) => `<div class="macro-item"><span class="muted">${k}</span><b>${v}</b><span class="muted">${sub}</span></div>`).join("")}
+    <div class="macro-item stress ${m.stress ? "on" : ""}"><span class="muted">匯率壓力</span><b>${m.stress ? "有" : "無"}</b><span class="muted">${m.date}</span></div></div>
+    <p class="note">${m.stress ? "<strong>注意：</strong>近 20 日日圓對美元升值 ≥ 3% 或台幣貶值 ≥ 1.5%。過去出現時，台股之後的跌幅較深，但平均報酬不一定較差；只當風險提示，不是交易訊號。" : "匯率壓力＝近 20 日日圓對美元升值 ≥ 3%（套利交易平倉）或台幣貶值 ≥ 1.5%（外資匯出）。研究顯示匯率與利差對台股沒有穩定的預測力，只作風險提示。"}
+    <button type="button" class="link-btn doc-link" data-doc="research/macro_fx_rates.md" data-title="匯率與美日利差研究">研究報告</button></p>
+    <div class="pane-legend" id="lgFx"></div><div class="chart chart-fx" id="chFx"></div>`;
+  box.querySelector("[data-doc]").onclick = (e) => openDoc(e.target.dataset.title, e.target.dataset.doc);
+  fxChart?.remove();
+  fxChart = LWC.createChart($("chFx"), { ...chartOptions(true), leftPriceScale: { visible: true, borderColor: cssVar("--axis") } });
+  const h = m.hist;
+  const a = fxChart.addLineSeries({ color: cssVar("--s1"), lineWidth: 2, priceScaleId: "left", priceLineVisible: false, lastValueVisible: true });
+  const b = fxChart.addLineSeries({ color: cssVar("--s2"), lineWidth: 2, priceScaleId: "right", priceLineVisible: false, lastValueVisible: true });
+  a.setData(h.d.map((t, k) => (isNum(h.usdtwd[k]) ? { time: t, value: h.usdtwd[k] } : { time: t })));
+  b.setData(h.d.map((t, k) => (isNum(h.usdjpy[k]) ? { time: t, value: h.usdjpy[k] } : { time: t })));
+  fxChart.timeScale().fitContent();
+  $("lgFx").innerHTML = `<span><b>近一年匯率</b></span><span class="item"><span class="swatch" style="color:var(--s1)"></span>美元/台幣（左軸）</span><span class="item"><span class="swatch" style="color:var(--s2)"></span>美元/日圓（右軸）</span>`;
+}
+
+function renderFollowPicker(G) {
+  const ids = S.strategies.filter((s) => !isBaseline(s) && G.strategies[s.id]);
+  $("sigPickCount").textContent = follow ? `${ids.filter((s) => follow.has(s.id)).length}/${ids.length}` : `全部 ${ids.length}`;
+  const box = $("sigPickList");
+  if (box.dataset.ready) {
+    box.querySelectorAll("[data-follow]").forEach((cb) => (cb.checked = follows(cb.dataset.follow)));
+    return;
+  }
+  const groups = {};
+  for (const s of ids) (groups[s.family] ??= []).push(s);
+  box.innerHTML = `<div class="actions"><button type="button" class="btn" data-all="1">全選</button><button type="button" class="btn" data-all="0">全不選</button><button type="button" class="btn" data-all="robust" title="買點或賣點在 50 檔、代表股的樣本內外都比平常好的策略">只選訊號穩定的</button></div>` +
+    Object.entries(groups).map(([f, list]) => `<fieldset><legend>${esc(f)}</legend>${list.map((s) => `<label class="check"><input type="checkbox" data-follow="${s.id}" ${follows(s.id) ? "checked" : ""}>${swatch(s)}${esc(s.label)}${badges(G.strategies[s.id])}${G.strategies[s.id].triggers ? "" : ' <span class="muted">（無觸發價）</span>'}</label>`).join("")}</fieldset>`).join("");
+  box.dataset.ready = "1";
+  box.onchange = (e) => {
+    const cb = e.target.closest("[data-follow]");
+    if (!cb) return;
+    follow ??= new Set(ids.map((s) => s.id));
+    cb.checked ? follow.add(cb.dataset.follow) : follow.delete(cb.dataset.follow);
+    saveFollow();
+    renderSignals();
+  };
+  box.querySelectorAll("[data-all]").forEach((b) => (b.onclick = () => {
+    const v = b.dataset.all;
+    follow = v === "1" ? null : v === "0" ? new Set() : new Set(ids.filter((s) => G.strategies[s.id].robust_buy || G.strategies[s.id].robust_sell).map((s) => s.id));
+    saveFollow();
+    renderSignals();
+  }));
+}
+
+async function renderSignals() {
+  const raw = await loadSignals();
+  if (state.tab !== "signals") return;
+  if (!raw) { $("sigAsof").textContent = "尚未產生訊號資料（執行 python daily_update.py）"; return; }
+  const G = raw;
+  $("sigAsof").textContent = `${G.asof} 收盤後計算，下一個交易日開盤執行・更新於 ${G.generated.replace("T", " ")}`;
+  renderMacro(G.macro);
+  seg($("sigUniverse"), [["all", "全部"], ...Object.entries(S.universes).map(([u, v]) => [u, v.label.replace(/（.*/, "")])], state.sigUniverse, (v) => { state.sigUniverse = v; renderSignals(); });
+  seg($("sigView"), SIG_VIEWS, state.sigView, (v) => { state.sigView = v; renderSignals(); });
+  seg($("sigNear"), NEAR_OPTS, state.sigNear, (v) => { state.sigNear = v; renderSignals(); });
+  seg($("sigQPeriod"), [["is", "樣本內 2010–2020"], ["oos", "樣本外 2021–今"]], state.sigQPeriod, (v) => { state.sigQPeriod = v; renderSignals(); });
+  renderFollowPicker(G);
+
+  const orders = [], near = [];
+  for (const [code, st] of Object.entries(G.stocks)) {
+    if (state.sigUniverse !== "all" && st.kind !== state.sigUniverse) continue;
+    for (const [sid, e] of Object.entries(st.sig)) {
+      const s = strat(sid);
+      if (!s || !follows(sid)) continue;
+      if (e.side && sideOk(e.side)) orders.push({ code, st, s, e });
+      for (const t of e.trig || []) if (Math.abs(t.d) <= state.sigNear + 1e-9 && sideOk(t.side)) near.push({ code, st, s, e, t });
+    }
+  }
+  const order = new Map(S.strategies.map((s, i) => [s.id, i]));
+  orders.sort((a, b) => b.e.side - a.e.side || order.get(a.s.id) - order.get(b.s.id) || a.code.localeCompare(b.code));
+  near.sort((a, b) => Math.abs(a.t.d) - Math.abs(b.t.d) || a.code.localeCompare(b.code));
+  const counts = {};
+  for (const o of orders) counts[o.e.a] = (counts[o.e.a] || 0) + 1;
+  $("sigCounts").innerHTML = orders.length ? Object.entries(counts).map(([a, n]) => `${actChip(a, orders.find((o) => o.e.a === a).e.side)} ${n}`).join("　") : "";
+
+  const stockCell = (code, st) => `<a class="link-btn" href="#/stock/${code}">${code} ${esc(st.name)}</a>${st.kind === "extra" ? ' <span class="family">代表股</span>' : ""}`;
+  const stratCell = (s) => `<span class="name-cell">${swatch(s)}<span>${esc(s.label)}</span></span>`;
+  const closeCell = (st) => `${fmtPx(st.close)} <span class="${st.chg >= 0 ? "pos" : "neg"}">${spct(st.chg, 2)}</span>`;
+  const link = (code, sid) => `#/stock/${code}?s=${sid}&p=oos`;
+
+  $("sigOrders").innerHTML = orders.length ? `<thead><tr><th>股票</th><th>策略</th><th>明日開盤</th><th>收盤（漲跌）</th><th>部位</th><th>目前部位</th><th>之後的觸發價（明日收盤）</th><th title="樣本外：過去同方向訊號後 20 個交易日，相對同期平均的超額漲跌與上漲／下跌比例">訊號品質</th></tr></thead><tbody>${orders.map(({ code, st, s, e }) => `
+    <tr data-href="${link(code, s.id)}"><td>${stockCell(code, st)}</td><td>${stratCell(s)}</td><td>${actChip(e.a, e.side)}${e.warn ? `<br><span class="warn">${esc(e.warn)}</span>` : ""}</td><td>${closeCell(st)}</td>
+    <td>${posText(e.held)} → <b>${posText(e.to)}</b></td><td class="wrap">${e.side < 0 || e.held ? sinceText(e.since) : "—"}</td>
+    <td class="wrap">${(e.trig || []).slice().sort((a, b) => Math.abs(a.d) - Math.abs(b.d)).slice(0, 2).map(trigText).join("<br>") || (G.strategies[s.id]?.triggers ? "±10% 內無" : "—")}</td>
+    <td>${qualityCell(s.id, st.kind, e.side)}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td>目前關注的策略在這個範圍沒有委託。</td></tr></tbody>`;
+
+  $("sigNearTable").innerHTML = near.length ? `<thead><tr><th>股票</th><th>策略</th><th>明日開盤後部位</th><th>明日收盤條件 → 訊號</th><th>距離</th><th>收盤</th><th>訊號品質</th></tr></thead><tbody>${near.map(({ code, st, s, e, t }) => `
+    <tr data-href="${link(code, s.id)}"><td>${stockCell(code, st)}</td><td>${stratCell(s)}</td><td>${posText(e.to)}</td><td>收盤 ${trigCond(t)} → ${actChip(t.a, t.side)}</td>
+    <td class="${t.d > 0 ? "pos" : t.d < 0 ? "neg" : ""}">${trigDist(t)}</td><td>${closeCell(st)}</td><td>${qualityCell(s.id, st.kind, t.side)}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td>沒有在這個範圍內的觸發價。</td></tr></tbody>`;
+
+  for (const id of ["sigOrders", "sigNearTable"]) $(id).onclick = (ev) => {
+    if (ev.target.closest("a")) return;
+    const tr = ev.target.closest("tr[data-href]");
+    if (tr) location.hash = tr.dataset.href;
+  };
+  renderQuality(G);
+  $("sigDigest").value = digestText(G, orders, near);
+}
+
+function renderQuality(G) {
+  const kind = state.sigUniverse === "all" ? "stocks" : state.sigUniverse;
+  const per = state.sigQPeriod;
+  const H = G.horizons || [5, 20];
+  const rows = S.strategies.filter((s) => !isBaseline(s) && G.strategies[s.id]?.quality?.[kind]?.[per]).map((s) => {
+    const q = G.strategies[s.id].quality[kind][per];
+    const ex = (x) => `<td class="${isNum(x) ? (x >= 0 ? "pos" : "neg") : ""}">${spct(x, 2)}</td>`;
+    return `<tr class="${follows(s.id) ? "" : "dim"}"><td>${stratCell2(s)}</td><td>${q.codes}</td><td>${num(q.buy_rate, 1)}</td>${H.map((h) => ex(q[`buy${h}`])).join("")}<td>${pct(q.buy_up20, 0)} <span class="muted">/ ${pct(q.base_up20, 0)}</span></td>
+      ${H.map((h) => ex(q[`sell${h}`])).join("")}<td>${pct(q.sell_dn20, 0)} <span class="muted">/ ${pct(1 - q.base_up20, 0)}</span></td><td>${q.trades}</td><td>${pct(q.win, 0)}</td><td>${spct(q.avg)}</td><td>${isNum(q.hold) ? Math.round(q.hold) + " 天" : "—"}</td></tr>`;
+  }).join("");
+  $("sigQuality").innerHTML = `<thead><tr><th>策略</th><th>標的數</th><th>買訊<br>每檔每年</th>${H.map((h) => `<th>買後 ${h} 日<br>超額漲跌</th>`).join("")}<th>買後 20 日上漲<br>比例 / 平常</th>${H.map((h) => `<th>賣後 ${h} 日<br>超額漲跌</th>`).join("")}<th>賣後 20 日下跌<br>比例 / 平常</th><th>完整<br>交易數</th><th>勝率</th><th>平均每筆<br>（含成本）</th><th>平均<br>持有</th></tr></thead><tbody>${rows}</tbody>`;
+}
+const badges = (m) => (m?.robust_buy ? '<span class="badge buy" title="50 檔、代表股（或 ETF）的樣本內與樣本外，買點後 20 日的超額漲跌都大於 0">買點穩定</span>' : "") +
+  (m?.robust_sell ? '<span class="badge sell" title="50 檔、代表股（或 ETF）的樣本內與樣本外，賣點後 20 日的超額漲跌都小於 0">賣點穩定</span>' : "");
+const stratCell2 = (s) => `<span class="name-cell">${swatch(s)}<a class="link-btn" href="#/strategies?s=${esc(s.id)}">${esc(s.label)}</a>${badges(SG?.strategies[s.id])}</span>`;
+
+function digestText(G, orders, near) {
+  const lines = [`${G.asof} 收盤後訊號（下一個交易日開盤執行）`];
+  for (const { code, st, s, e } of orders) lines.push(`【${e.a}】${code} ${st.name}｜${s.label}｜收盤 ${fmtPx(st.close)}${e.warn ? "｜" + e.warn : ""}`);
+  if (!orders.length) lines.push("（沒有委託）");
+  if (near.length) {
+    lines.push("", `接近觸發（明日收盤變動 ${pct(state.sigNear, 0)} 以內）`);
+    for (const { code, st, s, t } of near) lines.push(`${code} ${st.name}｜${s.label}｜明日收盤 ${trigCond(t)} → ${t.a}（${trigDist(t)}）`);
+  }
+  if (G.macro?.stress) lines.push("", "⚠ 匯率壓力：近 20 日日圓急升或台幣急貶");
+  return lines.join("\n");
+}
+
+async function renderStockSignals(st) {
+  const G = await loadSignals();
+  const box = $("stSig"), ss = G?.stocks?.[st.code];
+  if (!ss || state.tab !== "stock" || st.code !== state.code) { box.hidden = !ss; return; }
+  box.hidden = false;
+  const sigs = Object.values(ss.sig), nLong = sigs.filter((e) => e.to > 1e-6).length, nShort = sigs.filter((e) => e.to < -1e-6).length;
+  $("stSigAsof").innerHTML = `${G.asof} 收盤 ${fmtPx(ss.close)} <span class="${ss.chg >= 0 ? "pos" : "neg"}">${spct(ss.chg, 2)}</span>・明日開盤執行${ss.note_text ? `・下一交易日${esc(ss.note_text)}` : ""}
+    ・策略共識（明日開盤後）：<span class="pos">多 ${nLong}</span>・空手 ${sigs.length - nLong - nShort}${nShort ? `・<span class="neg">空 ${nShort}</span>` : ""}`;
+  const rows = S.strategies.filter((s) => ss.sig[s.id]).map((s) => {
+    const e = ss.sig[s.id];
+    const trig = (e.trig || []).map(trigText).join("<br>") || (G.strategies[s.id]?.triggers ? `<span class="muted">±10% 內無</span>` : `<span class="muted">模型／跨股票決定，無法事先算出</span>`);
+    return `<tr class="${s.id === state.focus ? "focus" : ""}"><td><span class="name-cell">${swatch(s)}<button type="button" class="link-btn" data-focus="${s.id}">${esc(s.label)}</button></span></td>
+      <td>${actChip(e.a, e.side)}${e.stale ? `<br><span class="warn">部位停在 ${e.stale}</span>` : ""}${e.warn ? `<br><span class="warn">${esc(e.warn)}</span>` : ""}</td><td>${posText(e.held)} → <b>${posText(e.to)}</b></td>
+      <td class="wrap">${sinceText(e.since)}</td><td class="wrap">${trig}</td><td>${qualityCell(s.id, ss.kind, 1)}</td><td>${qualityCell(s.id, ss.kind, -1)}</td></tr>`;
+  }).join("");
+  $("stSigTable").innerHTML = `<thead><tr><th>策略</th><th>明日開盤</th><th>部位</th><th>目前部位</th><th>明日收盤觸發價（後天開盤執行）</th><th>買訊品質</th><th>賣訊品質</th></tr></thead><tbody>${rows}</tbody>`;
+  $("stSigTable").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => setFocus(b.dataset.focus)));
+}
+
 // ---------- stock view ----------
 async function loadStock(code) {
   if (!stockCache.has(code)) {
@@ -319,7 +515,8 @@ async function loadStock(code) {
 }
 
 function initStockControls() {
-  $("stockList").innerHTML = S.stocks.map((s) => `<option value="${s.code} ${esc(s.name)}">${s.kind === "etf" ? "ETF" : "股票"}</option>`).join("");
+  const kindLabel = (s) => (s.kind === "etf" ? "ETF" : s.kind === "extra" ? `代表股・${s.sector || ""}` : "0050 成分股");
+  $("stockList").innerHTML = S.stocks.map((s) => `<option value="${s.code} ${esc(s.name)}">${esc(kindLabel(s))}</option>`).join("");
   const pick = () => {
     const code = $("stockInput").value.trim().split(/\s+/)[0];
     const hit = S.stocks.find((s) => s.code === code) || S.stocks.find((s) => s.name.includes($("stockInput").value.trim()));
@@ -388,8 +585,8 @@ async function renderStock() {
   $("customRange").hidden = state.period !== "custom";
   $("stFold").value = isFold(state.period) ? state.period : "";
 
-  const st = await loadStock(state.code);
-  if (st.code !== state.code) return;
+  const [st] = await Promise.all([loadStock(state.code), loadSignals()]);
+  if (st.code !== state.code || state.tab !== "stock") return;
   if (!appliesTo(strat(state.focus) || {}, st)) {
     state.focus = S.strategies.find((s) => !isBaseline(s) && appliesTo(s, st))?.id || "buy_hold";
     shown.add(state.focus);
@@ -402,7 +599,8 @@ async function renderStock() {
 
   const per = state.period === "custom" ? { start: state.from || st.d[0], end: state.to || null } : S.periods[state.period];
   const b = periodBounds(st.d, per.start, per.end);
-  $("stockTitle").textContent = `${st.code} ${st.name}`;
+  $("stockTitle").textContent = `${st.code} ${st.name}${st.sector ? `（${st.sector}）` : ""}`;
+  renderStockSignals(st);
   destroyCharts();
   if (!b) {
     $("stockRange").textContent = `此期間資料不足（${st.name} 的資料從 ${st.d[0]} 開始，需先有 ${ENGINE.warmup} 個交易日暖身）`;
@@ -413,7 +611,8 @@ async function renderStock() {
   const [i0, i1] = b;
   $("stockRange").textContent = `${st.d[i0]} ～ ${st.d[i1]}，${i1 - i0 + 1} 個交易日`;
   const runs = runAll(st, i0, i1);
-  drawCharts(st, i0, i1, runs);
+  const ss = SG?.stocks?.[st.code];
+  drawCharts(st, i0, i1, runs, ss && ss.date === st.d[st.d.length - 1] ? ss.sig[state.focus] : null);
   renderStockTable(runs);
   renderTrades(st, runs[state.focus]);
 }
@@ -429,7 +628,7 @@ function chartOptions(showTime) {
     layout: { background: { type: "solid", color: cssVar("--surface") }, textColor: cssVar("--muted"), fontSize: 11, fontFamily: getComputedStyle(document.body).fontFamily },
     grid: { vertLines: { color: cssVar("--grid") }, horzLines: { color: cssVar("--grid") } },
     rightPriceScale: { borderColor: cssVar("--axis"), minimumWidth: 72 },
-    timeScale: { borderColor: cssVar("--axis"), visible: showTime },
+    timeScale: { borderColor: cssVar("--axis"), visible: showTime, rightOffset: 4 },
     crosshair: { mode: LWC.CrosshairMode.Normal },
     localization: { locale: "zh-TW", dateFormat: "yyyy-MM-dd" },
     handleScale: { axisPressedMouseMove: { time: true, price: false } },
@@ -438,7 +637,7 @@ function chartOptions(showTime) {
 
 const LS = { solid: 0, dot: 1, dash: 2, longdash: 3, sparsedot: 4 };
 
-function drawCharts(st, i0, i1, runs) {
+function drawCharts(st, i0, i1, runs, sig) {
   const up = cssVar("--up"), down = cssVar("--down");
   const T = st.d.slice(i0, i1 + 1);
   const idx = new Map(T.map((t, k) => [t, k]));
@@ -468,11 +667,21 @@ function drawCharts(st, i0, i1, runs) {
     try { localStorage.setItem("mas", JSON.stringify([...shownMa])); } catch {}
   };
   const fs = strat(state.focus), fcolor = cssVar(fs.colorVar), fills = runs[state.focus].fills;
-  candle.setMarkers(fills.map((f) => {
+  const markers = fills.map((f) => {
     const buy = f.to > f.from;
     const text = fills.length > 80 ? "" : fillLabel(f.from, f.to);
     return { time: st.d[f.i], position: buy ? "belowBar" : "aboveBar", color: fcolor, shape: buy ? "arrowUp" : "arrowDown", text };
-  }));
+  });
+  // Today's decision fills at the next open (not in the data yet); its triggers are tomorrow's closing-price alerts.
+  if (sig && i1 === st.d.length - 1) {
+    if (sig.side) markers.push({ time: st.d[i1], position: sig.side > 0 ? "belowBar" : "aboveBar", color: sig.side > 0 ? up : down, shape: "circle", text: `明日${sig.a}` });
+    for (const t of sig.trig || []) {
+      for (const [px, op] of [[t.lo, "≥"], [t.hi, "≤"]]) {
+        if (px != null) candle.createPriceLine({ price: px, color: t.side > 0 ? up : down, lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: `${t.a} ${t.lo != null && t.hi != null ? trigCond(t) : op}` });
+      }
+    }
+  }
+  candle.setMarkers(markers);
 
   const kdC = LWC.createChart($("chKd"), chartOptions(false));
   const kS = kdC.addLineSeries({ color: cssVar("--s1"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
@@ -652,7 +861,7 @@ async function main() {
   S.cv ??= {};
   configure(S.engine);
   assignStyles();
-  $("dataDate").textContent = `資料至 ${S.stocks[0].end}・成分股 ${S.data_date}`;
+  $("dataDate").textContent = `資料至 ${S.data_end || S.stocks[0].end}・成分股 ${S.data_date}`;
   $("footDate").textContent = S.data_date;
   $("ovMetric").onchange = () => { state.metric = $("ovMetric").value; writeHash(); renderOverview(); };
   foldOptions($("ovFold"));
@@ -660,7 +869,10 @@ async function main() {
   $("ovFold").onchange = () => { state.period = $("ovFold").value || "oos"; writeHash(); renderOverview(); };
   $("stFold").onchange = () => { state.period = $("stFold").value || "oos"; writeHash(); renderStock(); };
   $("docClose").onclick = () => $("docDialog").close();
-  document.querySelectorAll(".callout [data-doc]").forEach((b) => (b.onclick = () => openDoc(b.dataset.title, b.dataset.doc)));
+  $("sigCopy").onclick = async (e) => {
+    try { await navigator.clipboard.writeText($("sigDigest").value); e.target.textContent = "已複製"; } catch { $("sigDigest").select(); e.target.textContent = "請手動複製"; }
+  };
+  document.querySelectorAll(".callout [data-doc], .doc-link[data-doc]").forEach((b) => (b.onclick = () => openDoc(b.dataset.title, b.dataset.doc)));
   initStockControls();
   readHash();
   $("loading").remove();

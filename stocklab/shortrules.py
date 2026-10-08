@@ -58,6 +58,23 @@ def download_notes(codes=None, refresh=False):
         print(code, len(d), flush=True)
 
 
+def update_notes(codes=None, lookback_days=10):
+    """Daily update: re-fetch the notes from `lookback_days` before the cached last date (full download if missing)."""
+    for code in codes or CODES:
+        p = _path(code)
+        if not p.exists():
+            download_notes([code])
+            continue
+        old = pd.read_csv(p, dtype={"Note": str})
+        start = pd.Timestamp(old["date"].max()) - pd.Timedelta(days=lookback_days)
+        d = ext.finmind("TaiwanStockMarginPurchaseShortSale", code, start=start.strftime("%Y-%m-%d"))
+        if d.empty:
+            continue
+        d = d[[c for c in old.columns if c in d.columns]]
+        keep = old[pd.to_datetime(old["date"]) < start]
+        pd.concat([keep, d], ignore_index=True).to_csv(p, index=False, compression="gzip")
+
+
 def notes(code) -> pd.DataFrame:
     d = pd.read_csv(_path(code), parse_dates=["date"], dtype={"Note": str}).set_index("date").sort_index()
     d["Note"] = d["Note"].fillna("").str.strip()

@@ -22,9 +22,11 @@ def _panel(data):
 
 
 def _month_end(idx):
-    """Last bar of each month (the final bar of the data counts too)."""
+    """Last bar of each month. The final bar of the data counts only if the next business day starts a new month, so
+    the latest decision matches what will actually be traded (the daily signals rely on it)."""
     m = idx.year.to_numpy() * 12 + idx.month.to_numpy()
-    return pd.Series(np.r_[m[1:] != m[:-1], True], index=idx)
+    last = (idx[-1] + pd.offsets.BDay(1)).month != idx[-1].month
+    return pd.Series(np.r_[m[1:] != m[:-1], last], index=idx)
 
 
 def _monthly(weights_at, idx):
@@ -62,6 +64,24 @@ def riskoff_switch(data):
     tr = _trend(close)
     w = pd.DataFrame(0.0, index=close.index, columns=codes)
     risk_on = tr["0050"] == 1
+    w.loc[risk_on, "0050"] = 1.0
+    for c in ("00679B", "00635U"):
+        if c in codes:
+            w.loc[~risk_on & (tr[c] == 1), c] = 0.5
+    return _monthly(w, close.index)
+
+
+def riskoff_macro(data):
+    """Like riskoff_switch, but also risk-off while FX shows carry stress at the month end (yen up >= 3% or TWD down
+    >= 1.5% vs USD over 20 days; stocklab.macro.carry_stress)."""
+    from stocklab import external as ext
+    from stocklab import macro
+
+    codes, close = _panel(data)
+    tr = _trend(close)
+    stress = macro.carry_stress(macro.load_macro(index=close.index, end=ext.data_end(data))).fillna(False)
+    w = pd.DataFrame(0.0, index=close.index, columns=codes)
+    risk_on = (tr["0050"] == 1) & ~stress
     w.loc[risk_on, "0050"] = 1.0
     for c in ("00679B", "00635U"):
         if c in codes:
@@ -121,5 +141,15 @@ STRATEGIES = [
         "multicharts": None,
         "positions": _as_positions(riskoff_switch),
         "weights": _as_weights(riskoff_switch),
+    },
+    {
+        "id": "ma_riskoff_macro",
+        "label": "股債金切換＋匯率壓力",
+        "family": "多空與跨資產",
+        "universe": "etfs",
+        "description": "**規則**：同「股債金切換」，但月底時若出現匯率壓力（近 20 日日圓對美元升值 ≥ 3%，即套利交易平倉的型態；或台幣對美元貶值 ≥ 1.5%，常見於外資匯出），也改持有美債與黃金。\n**研究結果（research/macro_fx_rates.md）**：匯率與美日利差對 0050 未來 20 日報酬沒有穩定的預測力，樣本內與樣本外方向相反；這個版本用來檢驗「把匯率納入」是否改善切換策略。\n" + _COMMON,
+        "multicharts": None,
+        "positions": _as_positions(riskoff_macro),
+        "weights": _as_weights(riskoff_macro),
     },
 ]

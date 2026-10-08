@@ -35,13 +35,36 @@ def discover(families=None):
     return out
 
 
-def universe_data(strategy, data):
-    """The securities a strategy trades: 'stocks' (default, the 50), 'etfs', or 'all'."""
-    from .etf import CODES as ETF_CODES
-    from .universe import CODES as STOCK_CODES
+# Families not run on the extra stocks: they need per-stock FinMind chip / revenue data, downloaded for the 50 only.
+EXTRA_SKIP_FAMILIES = {"dl_revenue_flow", "dl_cross_stock"}
 
-    want = {"stocks": set(STOCK_CODES), "etfs": set(ETF_CODES), "all": set(STOCK_CODES) | set(ETF_CODES)}[strategy.get("universe", "stocks")]
+
+def universe_data(strategy, data, universe=None):
+    """The securities a strategy trades: 'stocks' (default, the 50), 'etfs', 'all', or with universe='extra' the
+    representative stocks outside the 50 (an out-of-sample check of the stock strategies)."""
+    from .etf import CODES as ETF_CODES
+    from .universe import CODES as STOCK_CODES, EXTRA_CODES
+
+    u = universe or strategy.get("universe", "stocks")
+    want = {"stocks": set(STOCK_CODES), "etfs": set(ETF_CODES), "all": set(STOCK_CODES) | set(ETF_CODES),
+            "extra": set(EXTRA_CODES)}[u]
     return {c: df for c, df in data.items() if c in want}
+
+
+def runs_on_extra(strategy, data=None):
+    """Stock strategies also run on the extra stocks (when they are loaded), except EXTRA_SKIP_FAMILIES."""
+    from .universe import EXTRA_CODES
+
+    loaded = data is None or any(c in data for c in EXTRA_CODES)
+    return loaded and strategy.get("universe", "stocks") == "stocks" and strategy.get("family_dir") not in EXTRA_SKIP_FAMILIES
+
+
+def universes_of(strategy, data):
+    return [None] + (["extra"] if runs_on_extra(strategy, data) else [])
+
+
+def pos_path(sid, universe=None):
+    return POS_CACHE / (f"{sid}.pkl" if universe is None else f"{sid}@{universe}.pkl")
 
 
 def fees_of(code):
@@ -50,20 +73,39 @@ def fees_of(code):
     return fees(code)
 
 
-def compute_positions(strategy, data, use_cache=False):
-    """Strategy targets after Taiwan short-selling rules (bt.enforce_short_rules), cached per strategy."""
-    path = POS_CACHE / f"{strategy['id']}.pkl"
+def compute_positions(strategy, data, use_cache=False, universe=None):
+    """Strategy targets after Taiwan short-selling rules (bt.enforce_short_rules), cached per strategy (and per
+    universe: data/positions/<id>@extra.pkl for the extra stocks)."""
+    path = pos_path(strategy["id"], universe)
     if use_cache and path.exists():
         return pd.read_pickle(path)
     t = time.time()
-    udata = universe_data(strategy, data)
+    udata = universe_data(strategy, data, universe)
     pos = strategy["positions"](udata)
     validate(strategy["id"], pos, udata)
     pos = bt.effective_positions(pos, udata)
     POS_CACHE.mkdir(parents=True, exist_ok=True)
     pd.to_pickle(pos, path)
-    print(f"  {strategy['id']}: positions in {time.time() - t:.1f}s")
+    print(f"  {strategy['id']}{'@' + universe if universe else ''}: positions in {time.time() - t:.1f}s", flush=True)
     return pos
+
+
+def refresh_positions(strategies, data, families=None):
+    """Recompute and cache every strategy's positions (main universe and extra stocks). A failing strategy keeps its
+    previous cache and is reported, so one broken model doesn't stop the daily update."""
+    failed = []
+    for s in strategies:
+        if families and s["family_dir"] not in families:
+            continue
+        for u in universes_of(s, data):
+            try:
+                compute_positions(s, data, use_cache=False, universe=u)
+            except Exception as e:  # noqa: BLE001
+                failed.append(f"{s['id']}{'@' + u if u else ''}")
+                print(f"  {s['id']}: FAILED {type(e).__name__}: {e}", flush=True)
+    if failed:
+        print(f"positions not refreshed: {failed}", flush=True)
+    return failed
 
 
 def validate(sid, pos, data):
@@ -111,9 +153,15 @@ def evaluate(strategies, data, periods=("is", "oos", "full"), use_cache=False):
         runner = bt.run_buy_hold if b["id"] == "buy_hold" else bt.run_dca
         results[b["id"]] = {p: {c: runner(df, p, fees_of(c)) for c, df in data.items()} for p in periods}
     for s in strategies:
-        pos = compute_positions(s, data, use_cache)
-        udata = universe_data(s, data)
-        results[s["id"]] = {p: {c: bt.run_strategy(df, pos[c], p, fees_of(c)) for c, df in udata.items()} for p in periods}
+        results[s["id"]] = {p: {} for p in periods}
+        for u in universes_of(s, data):
+            if u and use_cache and not pos_path(s["id"], u).exists():
+                continue  # cached mode never trains a model for the extra stocks; run refresh_positions for that
+            pos = compute_positions(s, data, use_cache, u)
+            for c, df in universe_data(s, data, u).items():
+                f = fees_of(c)
+                for p in periods:
+                    results[s["id"]][p][c] = bt.run_strategy(df, pos[c], p, f)
     return results
 
 
@@ -179,12 +227,14 @@ def portfolio_results(strategies, data, periods, use_cache=True):
     return out
 
 
-def load_everything():
-    """The 50 stocks plus the ETFs (0050, gold, oil, US Treasuries), keyed by code."""
-    from .data import load_all
+def load_everything(extra=True):
+    """The 50 stocks plus the ETFs (0050, gold, oil, US Treasuries) and, with extra=True, the representative stocks
+    outside the 50, keyed by code."""
+    from .data import ALL_CODES, load_all
+    from .universe import CODES
     from .etf import load_all_etfs
 
-    return load_all() | load_all_etfs()
+    return load_all(ALL_CODES if extra else CODES) | load_all_etfs()
 
 
 def print_portfolio(results):

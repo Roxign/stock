@@ -1,10 +1,12 @@
 # 台灣50 策略實驗室
 
-**網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可，逐檔檢視每個策略的買賣點與績效）
+**網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可）
+- [今日訊號](https://roxign.github.io/stock/#/signals)：每個策略在最新收盤後的買賣決定（下一個交易日開盤執行）、明日收盤的觸發價（目標價）、匯率與利差風險提示、各策略過去買賣點的準確度
+- [個股回測](https://roxign.github.io/stock/#/stock/2330)：選一檔股票，看歷史買賣點、當日訊號、觸發價線與各策略績效
 
-以元大台灣50（0050）的 50 檔成分股，以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究多種交易策略（可做多、也可依台灣融券規則放空），並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
+以元大台灣50（0050）的 50 檔成分股、另外 55 檔代表股（開發時沒用過的股票，用來檢驗策略），以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究多種交易策略（可做多、也可依台灣融券規則放空），並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
 
-**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)
+**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)；買賣訊號與通知：[research/signals.md](research/signals.md)；匯率與利差：[research/macro_fx_rates.md](research/macro_fx_rates.md)
 
 - 研究方向（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
   - `kdj_macd_rule` — KDJ + MACD 規則型
@@ -46,14 +48,25 @@
 
 **限制**：成分股是 2026/10/02 的名單，早年回測存在倖存者偏差；2021 年後台股大多頭，買進持有的報酬很難被超越，請同時看 Sharpe 與最大回撤。回測結果不代表未來績效，也不是投資建議。
 
+## 每日訊號與通知
+
+收盤後執行 `daily_update.py`：下載最新資料 → 重算所有策略的部位 → 產生訊號（`stocklab/signals.py`，輸出 `docs/data/signals.json`）→ 重建網頁資料；加 `--push` 會提交並推送到 GitHub Pages。
+
+- **委託**：策略在收盤時決定部位，回測也在隔天開盤成交，所以「今天收盤的決定」就是明天開盤的委託（買進、加碼、賣出、減碼、放空、回補）。
+- **觸發價（目標價）**：只用該股自身價格決定的策略，會在 ±10% 漲跌幅內逐一假設明日收盤價重算，找出「明日收盤到多少就會出現買進／賣出（含停損）」；深度學習、跨股票與多資產策略無法事先算出。
+- **訊號品質**：每個策略過去買點、賣點之後 5／20 個交易日的超額漲跌、上漲比例、勝率，分樣本內、樣本外、50 檔、代表股、ETF。
+- **通知文字**：網頁「今日訊號」頁最下方可複製；Python 端 `stocklab.signals.digest()` 產生相同內容，之後可接 LINE、Email、Telegram 等管道。
+- FinMind 未註冊每小時約 300 次請求，每日更新約 400 次，會自動等待；到 FinMind 免費註冊後把 token 設為環境變數 `FINMIND_TOKEN` 可加快。
+
 ## 使用方式
 
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
-.venv/Scripts/python evaluate.py --family kdj_macd_rule --periods is,oos   # 單一方向的排行
+.venv/Scripts/python daily_update.py                                      # 每日：資料 → 部位 → 訊號 → 網頁（--push 推送）
+.venv/Scripts/python evaluate.py --family kdj_macd_rule --periods is,oos   # 單一方向的排行（含 50 檔與代表股）
 .venv/Scripts/python evaluate.py --family trend --controls --portfolio    # 加上對照組與投資組合計分板
-.venv/Scripts/python build_site.py --download                            # 更新股價並重建網頁資料
+.venv/Scripts/python build_site.py --cached                              # 用已算好的部位重建網頁資料
 .venv/Scripts/python -m http.server 8765 -d docs                         # 本機預覽 http://localhost:8765
 ```
 
@@ -67,10 +80,12 @@ python -m venv .venv
 ## 專案結構
 
 ```
-stocklab/        共用框架：成分股、資料下載與清理、指標、回測引擎、對照組、投資組合、試驗紀錄
+stocklab/        共用框架：成分股與代表股、資料下載與清理、指標、回測引擎、對照組、投資組合、試驗紀錄、
+                 signals.py（每日訊號、觸發價、訊號品質）、macro.py（匯率與聯準會／日銀利率）
 strategies/      各研究方向的策略（_example 為範本）
 research/        跨方向的研究：深度學習文獻回顧、資料來源、試驗紀錄
 evaluate.py      在終端機印出策略 vs 基準的排行（不改動網頁）
 build_site.py    執行全部策略並輸出 docs/data/
+daily_update.py  每日更新：資料 → 部位 → 訊號 → 網頁（→ git push）
 docs/            GitHub Pages 網頁；engine.js 與 stocklab/backtest.py 邏輯一致
 ```

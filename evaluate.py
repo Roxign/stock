@@ -14,12 +14,13 @@ from stocklab import cv
 from stocklab.controls import evaluate_controls
 from stocklab.data import RAW_DIR, download
 from stocklab.runner import (check_lookahead, compute_positions, discover, evaluate, leaderboard, load_everything, portfolio_results,
-                             print_leaderboard, print_portfolio)
+                             print_leaderboard, print_portfolio, runs_on_extra)
 
 from stocklab.etf import CODES as ETF_CODES  # noqa: E402
-from stocklab.universe import CODES as STOCK_CODES  # noqa: E402
+from stocklab.universe import CODES as STOCK_CODES, EXTRA_CODES  # noqa: E402
 
-UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
+UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "extra": ("代表股（另 55 檔，開發時沒用過）", EXTRA_CODES),
+             "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--family", help="strategies/<family> folder name")
@@ -52,7 +53,7 @@ labels = {s["id"]: s["label"] for s in strategies}
 if args.controls:
     for s in strategies:
         results |= evaluate_controls(s["id"], compute_positions(s, data, use_cache=True), data, periods)
-used = {s.get("universe", "stocks") for s in strategies}
+used = {s.get("universe", "stocks") for s in strategies} | ({"extra"} if any(runs_on_extra(s, data) for s in strategies) else set())
 shown = [u for u in UNIVERSES if u in used or "all" in used]
 for u in shown:
     print(f"\n##### {UNIVERSES[u][0]}")

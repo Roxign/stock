@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>台灣50 策略實驗室</title>
-  <meta name="description" content="台灣50 成分股交易策略回測：KD/MACD 規則、深度學習、趨勢追蹤、均值回歸，與買進持有、定期定額比較。">
+  <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=7"></script>
 </head>
 <body>
   <header class="top">
@@ -18,6 +18,7 @@
       <span class="muted" id="dataDate"></span>
     </div>
     <nav class="tabs">
+      <a href="#/signals" data-tab="signals">今日訊號</a>
       <a href="#/overview" data-tab="overview">總覽</a>
       <a href="#/stock" data-tab="stock">個股回測</a>
       <a href="#/strategies" data-tab="strategies">策略說明</a>
@@ -29,6 +30,47 @@
 
   <main>
     <p id="loading" class="muted">載入資料中…</p>
+
+    <section id="view-signals" hidden>
+      <div class="stock-head">
+        <h2>今日買賣訊號</h2>
+        <span class="muted" id="sigAsof"></span>
+      </div>
+      <div class="macro panel" id="macroCard" hidden></div>
+
+      <div class="filters">
+        <div class="seg" id="sigUniverse" role="group" aria-label="標的"></div>
+        <div class="seg" id="sigView" role="group" aria-label="買方或賣方"></div>
+        <details class="pick" id="sigPick">
+          <summary>關注的策略（<span id="sigPickCount"></span>）</summary>
+          <div id="sigPickList" class="pick-list"></div>
+        </details>
+      </div>
+
+      <h2>下一個交易日開盤的委託 <span class="counts" id="sigCounts"></span></h2>
+      <p class="note">每個策略在最新收盤後的決定；回測也是「收盤決定、隔天開盤成交」，所以這就是策略明天開盤要下的單。「部位」是目前 → 明日開盤後的持股（多＝買進持有，空＝融券放空）。點一列可看該股的 K 線、歷史買賣點與觸發價線。</p>
+      <div class="table-wrap"><table id="sigOrders" class="data sig"></table></div>
+
+      <h2>接近觸發：明日收盤到這些價格就會出現訊號</h2>
+      <div class="filters slim">
+        <span class="muted">距離收盤</span>
+        <div class="seg" id="sigNear" role="group" aria-label="距離"></div>
+      </div>
+      <p class="note">只用該股自己的價格決定的策略，可以事先算出「明天收盤價落在哪裡會改變決定」：在 ±10% 漲跌幅內逐一假設明日收盤價（假設沒有上下影線）重算策略。訊號會在明日收盤後確定，<strong>後天開盤</strong>執行。深度學習與跨股票、跨資產的策略無法事先算出觸發價。</p>
+      <div class="table-wrap"><table id="sigNearTable" class="data sig"></table></div>
+
+      <h2>訊號品質：過去的買賣點準不準</h2>
+      <div class="filters slim"><div class="seg" id="sigQPeriod" role="group" aria-label="期間"></div></div>
+      <p class="note">統計每個策略過去所有買點（部位增加 ≥ 25%）與賣點（減少 ≥ 25%）之後 5、20 個交易日的漲跌（開盤到開盤），減去同一檔股票同期間的平均漲跌＝<strong>超額漲跌</strong>。<span class="pos">買點後的超額漲跌越高越好</span>；<span class="neg">賣點後的超額漲跌為負（賣了之後股價走弱）才代表賣得好</span>。「比例 / 平常」比較訊號後上漲（或下跌）的比例和任意一天的比例。標的依上方「標的」切換（全部時顯示 50 檔）。
+      <button type="button" class="link-btn doc-link" data-doc="research/signals.md" data-title="買賣訊號與通知說明">說明與結論</button></p>
+      <div class="table-wrap"><table id="sigQuality" class="data"></table></div>
+
+      <details class="trades">
+        <summary>通知文字（依目前篩選，可複製到 LINE、Email 等）</summary>
+        <textarea id="sigDigest" class="digest" readonly rows="12"></textarea>
+        <div class="actions"><button type="button" class="btn" id="sigCopy">複製</button></div>
+      </details>
+    </section>
 
     <section id="view-overview" hidden>
       <div class="filters">
@@ -54,11 +96,13 @@
           <button type="button" class="btn" data-doc="research/dl_literature.md" data-title="深度學習交易策略文獻回顧">深度學習文獻回顧</button>
           <button type="button" class="btn" data-doc="research/short_rules.md" data-title="台灣融券（放空）規則">放空規則</button>
           <button type="button" class="btn" data-doc="research/etf_data.md" data-title="黃金、石油、美債 ETF 資料">ETF 資料說明</button>
+          <button type="button" class="btn" data-doc="research/macro_fx_rates.md" data-title="匯率與美日利差研究">匯率與利差研究</button>
+          <button type="button" class="btn" data-doc="research/signals.md" data-title="買賣訊號與通知說明">訊號與通知</button>
         </span>
       </div>
 
       <h2>策略排行</h2>
-      <p class="note">每個數字是 50 檔成分股各自回測後的<strong>中位數</strong>；「勝過買進持有」是有幾成股票該策略的表現較好。點欄位標題可排序。<br>
+      <p class="note">每個數字是所選標的（50 檔成分股／另 55 檔代表股／ETF）各自回測後的<strong>中位數</strong>；「代表股」是開發策略時沒有用過的股票（含被剔除的前成分股與各產業代表），用來檢驗策略是否只適用於那 50 檔；「勝過買進持有」是有幾成股票該策略的表現較好。點欄位標題可排序。<br>
       「部位調整次數」是買賣（含加減碼）的次數；「完整交易勝率」只計從空手→持有→空手的完整交易。<br>
       <strong>樣本內</strong>（2010–2020）是開發策略、調整參數用的資料；<strong>樣本外</strong>（2021–今）是開發時刻意不看的資料，用來檢驗策略是否真的有效，<strong>請以樣本外為主要判斷依據</strong>。</p>
       <div class="table-wrap"><table id="board" class="data"></table></div>
@@ -111,6 +155,12 @@
         <span class="muted" id="stockRange"></span>
       </div>
 
+      <section class="panel sig-panel" id="stSig" hidden>
+        <div class="pane-legend"><b>今日訊號</b><span id="stSigAsof"></span></div>
+        <div class="table-wrap flat"><table id="stSigTable" class="data sig"></table></div>
+        <p class="note">點策略名稱可在 K 線上標示它的歷史買賣點（箭頭）、明日開盤的委託（圓點）與明日收盤的觸發價（虛線，<span class="pos">紅＝買方</span>、<span class="neg">綠＝賣方</span>）。訊號品質為樣本外（2021–今）訊號後 20 日的超額漲跌與上漲／下跌比例。</p>
+      </section>
+
       <div class="panel">
         <div class="pane-legend" id="lgPrice"></div>
         <div class="pane-legend ma-legend" id="lgMa" aria-label="均線（點選可隱藏／顯示）"></div>
@@ -150,7 +200,7 @@
   <div id="tip" class="tip" hidden></div>
 
   <footer>
-    回測結果僅供研究參考，不代表未來績效，也不是投資建議。價格為 Yahoo Finance 還原權值日資料；成分股為 <span id="footDate"></span> 的 0050 持股，回測早期年份存在倖存者偏差。
+    回測結果與訊號僅供研究參考，不代表未來績效，也不是投資建議。價格為 Yahoo Finance 還原權值日資料（最新幾天以證交所行情補齊）；成分股為 <span id="footDate"></span> 的 0050 持股，回測早期年份存在倖存者偏差。
   </footer>
 </body>
 </html>
