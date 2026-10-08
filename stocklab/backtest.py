@@ -49,10 +49,24 @@ def period_bounds(index, period):
 
 
 def clean_target(target, index):
-    return target.reindex(index).astype(float).fillna(0.0).clip(0.0, 1.0)
+    """Exposure in [-1, 1]: positive = long, negative = short (融券)."""
+    return target.reindex(index).astype(float).fillna(0.0).clip(-1.0, 1.0)
 
 
-def simulate(df, target, i0, i1):
+def default_fees():
+    return {"buy": BUY_FEE, "sell": SELL_FEE, "short": 0.0}
+
+
+def _trade_ret(side, entry_px, exit_px, f):
+    if side > 0:
+        return exit_px * (1 - f["sell"]) / (entry_px * (1 + f["buy"])) - 1
+    return entry_px * (1 - f["sell"] - f["short"]) / (exit_px * (1 + f["buy"])) - 1
+
+
+def simulate(df, target, i0, i1, fees=None):
+    """fees: {"buy", "sell" (incl. transaction tax), "short" (extra fee on short sales)}; defaults to stock costs."""
+    f = fees or default_fees()
+    buy, sell, short = f["buy"], f["sell"], f.get("short", 0.0)
     target = clean_target(target, df.index).to_numpy()
     o = df["open"].to_numpy()
     c = df["close"].to_numpy()
@@ -66,31 +80,97 @@ def simulate(df, target, i0, i1):
         if abs(t - cur) > 1e-9:
             orders += 1
             px = o[i]
-            want = t * (cash + sh * px) / px
-            d = want - sh
-            if d > 0:
-                d = min(d, cash / (px * (1 + BUY_FEE)))
-                cash -= d * px * (1 + BUY_FEE)
-                sh += d
-            elif d < 0:
-                if t == 0:
-                    d = -sh
-                cash += -d * px * (1 - SELL_FEE)
-                sh += d
-            if cur == 0 and t > 0:
-                entry = (i, px)
-            elif cur > 0 and t == 0 and entry:
-                trades.append([entry[0], i, entry[1], px, px * (1 - SELL_FEE) / (entry[1] * (1 + BUY_FEE)) - 1])
+            if t >= 0 and cur >= 0:
+                want = t * (cash + sh * px) / px
+                d = want - sh
+                if d > 0:
+                    d = min(d, cash / (px * (1 + buy)))
+                    cash -= d * px * (1 + buy)
+                    sh += d
+                elif d < 0:
+                    if t == 0:
+                        d = -sh
+                    cash += -d * px * (1 - sell)
+                    sh += d
+            elif t <= 0 and cur <= 0:
+                want = t * (cash + sh * px) / px
+                d = want - sh
+                if d < 0:
+                    cash += -d * px * (1 - sell - short)
+                    sh += d
+                elif d > 0:
+                    if t == 0:
+                        d = -sh
+                    cash -= d * px * (1 + buy)
+                    sh += d
+            else:  # crossing zero: close the old side, then open the new side with what is left
+                cash += sh * px * (1 - sell) if sh > 0 else sh * px * (1 + buy)
+                want = t * cash / px
+                if t > 0:
+                    want = min(want, cash / (px * (1 + buy)))
+                    cash -= want * px * (1 + buy)
+                else:
+                    cash += -want * px * (1 - sell - short)
+                sh = want
+            if cur != 0 and (t == 0 or (t > 0) != (cur > 0)) and entry:
+                trades.append([entry[0], i, entry[1], px, _trade_ret(entry[2], entry[1], px, f)])
                 entry = None
+            if t != 0 and (cur == 0 or (t > 0) != (cur > 0)):
+                entry = (i, px, 1 if t > 0 else -1)
             cur = t
         eq[k] = cash + sh * c[i]
         invested[k] = sh * c[i] / eq[k]
     if entry:
-        trades.append([entry[0], None, entry[1], c[i1], c[i1] * (1 - SELL_FEE) / (entry[1] * (1 + BUY_FEE)) - 1])
+        trades.append([entry[0], None, entry[1], c[i1], _trade_ret(entry[2], entry[1], c[i1], f)])
     return pd.Series(eq, index=df.index[i0 : i1 + 1]), invested, trades, orders
 
 
-def simulate_dca(df, i0, i1):
+def enforce_short_rules(code, df, target):
+    """The exposure a trader could actually hold under Taiwan's 融券 rules (stocklab/shortrules.py).
+
+    Long exposure passes through. A short is opened or enlarged only if the security is shortable that day and,
+    when 平盤以下 is restricted, the open is not below the previous close; open shorts are covered on forced-cover
+    days and after a margin call (擔保維持率 below 130% at the close -> cover at the next open).
+    Value at bar t = exposure for the fill at bar t+1's open, the same convention as strategy targets.
+    """
+    t = clean_target(target, df.index)
+    if (t >= 0).all():
+        return t
+    from . import shortrules as sr
+
+    cal = sr.short_calendar(code, df)
+    can, must, flat = (cal[k].to_numpy() for k in ("can_open_short", "must_cover", "flat_restricted"))
+    o, c = df["open"].to_numpy(), df["close"].to_numpy()
+    mr = sr.margin_rate(df.index).to_numpy()
+    f = sr.fees(code)
+    raw = t.to_numpy()
+    eff = raw.copy()
+    cur, entry, call = 0.0, None, False
+    for i in range(1, len(raw)):
+        want = raw[i - 1]
+        if want < 0:
+            if must[i] or call:
+                want = 0.0
+            elif want < cur and (not can[i] or (flat[i] and o[i] < c[i - 1])):
+                want = cur if cur < 0 else 0.0
+        if want < 0:
+            if cur >= 0:
+                entry = o[i]
+            elif want < cur:
+                entry = (entry * -cur + o[i] * (cur - want)) / -want
+        else:
+            entry = None
+        call = want < 0 and (mr[i] + 1 - f["sell"] - f["short"]) * entry / c[i] < sr.MAINTENANCE
+        eff[i - 1] = want
+        cur = want
+    return pd.Series(eff, index=df.index)
+
+
+def effective_positions(positions, data):
+    return {c: enforce_short_rules(c, data[c], p) for c, p in positions.items()}
+
+
+def simulate_dca(df, i0, i1, buy_fee=None):
     """定期定額: split CAPITAL evenly and buy at the open of the first trading day of each month."""
     idx = df.index[i0 : i1 + 1]
     first = ~idx.to_period("M").duplicated()
@@ -102,7 +182,7 @@ def simulate_dca(df, i0, i1):
     flows = []
     for k, i in enumerate(range(i0, i1 + 1)):
         if first[k]:
-            sh += amt / (o[i] * (1 + BUY_FEE))
+            sh += amt / (o[i] * (1 + (BUY_FEE if buy_fee is None else buy_fee)))
             cash -= amt
             flows.append((idx[k], -amt))
         eq[k] = cash + sh * c[i]
@@ -156,23 +236,23 @@ def metrics(eq, invested=None, trades=None, orders=None):
     return m
 
 
-def run_strategy(df, target, period):
+def run_strategy(df, target, period, fees=None):
     b = period_bounds(df.index, period)
     if b is None:
         return None
-    eq, invested, trades, orders = simulate(df, target, *b)
+    eq, invested, trades, orders = simulate(df, target, *b, fees=fees)
     return {"equity": eq, "trades": trades, "metrics": metrics(eq, invested, trades, orders)}
 
 
-def run_buy_hold(df, period):
-    return run_strategy(df, pd.Series(1.0, index=df.index), period)
+def run_buy_hold(df, period, fees=None):
+    return run_strategy(df, pd.Series(1.0, index=df.index), period, fees)
 
 
-def run_dca(df, period):
+def run_dca(df, period, fees=None):
     b = period_bounds(df.index, period)
     if b is None:
         return None
-    eq, flows = simulate_dca(df, *b)
+    eq, flows = simulate_dca(df, *b, buy_fee=None if fees is None else fees["buy"])
     m = metrics(eq)
     m["xirr"] = xirr(flows)
     return {"equity": eq, "trades": [], "metrics": m}

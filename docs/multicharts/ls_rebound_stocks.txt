@@ -1,0 +1,65 @@
+{ ======================================================================================
+  KDJ+MACD 反彈・多空版（ls_rebound_stocks / ls_rebound_etfs）
+  --------------------------------------------------------------------------------------
+  規則（日 K，收盤後判斷，下一根 K 棒開盤市價成交）：
+    做多：K 值與 MACD 柱狀體（OSC）同一天由下往上轉折，且 DIF 與 MACD 線都在零軸之下。
+    放空：K 值與 OSC 同一天由上往下轉折，且 DIF 與 MACD 線都在零軸之上（持有多單時反手）。
+    停損：多單收盤 < 進場價 x (1 - StopPct)、空單收盤 > 進場價 x (1 + StopPct)，下一根開盤出場。
+  Inputs：
+    StopPct   停損比例（預設 0.10）
+    Capital   計算股數用的本金，請與 Strategy Properties 的 Initial Capital 相同
+  注意：
+    - 請在 Strategy Properties 設定手續費 0.1425%、賣出證交稅（股票 0.3%、ETF 0.1%、債券 ETF 免稅），
+      放空另有融券手續費 0.08%，以及合理滑價。
+    - MultiCharts 不會自動處理台灣的融券規則：非融券標的不可放空；除權息、股東會前的「停止融券賣出」
+      期間不可新增空單，且須在「融券最後回補日」前回補；平盤以下限制期間不得以低於前一日收盤價放空；
+      擔保維持率低於 130% 會被追繳。Python 回測已依證交所資料套用這些規則，實盤請依「停資停券預告」處理。
+    - Python 回測使用還原權值價格；未還原資料的除權息缺口會讓訊號略有不同。
+  ====================================================================================== }
+
+Inputs:
+	StopPct(0.10),
+	Capital(1000000);
+
+Vars:
+	rsv(50), kv(50), dv(50), hh(0), ll(0),
+	dif(0), macdv(0), osc(0),
+	kUp(false), kDn(false), oUp(false), oDn(false),
+	buySig(false), sellSig(false), shs(0);
+
+{ ---- 台灣 KDJ（9,3,3，1/3 平滑，初值 50） ---- }
+hh = Highest(High, 9);
+ll = Lowest(Low, 9);
+if hh - ll <> 0 then
+	rsv = (Close - ll) / (hh - ll) * 100
+else
+	rsv = 50;
+kv = kv[1] * 2 / 3 + rsv / 3;
+dv = dv[1] * 2 / 3 + kv / 3;
+
+{ ---- MACD：DIF = EMA12 - EMA26，MACD 線 = DIF 的 EMA9，OSC = DIF - MACD ---- }
+dif = XAverage(Close, 12) - XAverage(Close, 26);
+macdv = XAverage(dif, 9);
+osc = dif - macdv;
+
+{ ---- 同一天轉折 ---- }
+kUp = kv > kv[1] and kv[1] <= kv[2];
+kDn = kv < kv[1] and kv[1] >= kv[2];
+oUp = osc > osc[1] and osc[1] <= osc[2];
+oDn = osc < osc[1] and osc[1] >= osc[2];
+buySig = kUp and oUp and dif < 0 and macdv < 0;
+sellSig = kDn and oDn and dif > 0 and macdv > 0;
+
+shs = IntPortion((Capital + NetProfit) / Close);
+
+{ ---- 收盤停損，下一根開盤出場 ---- }
+if MarketPosition = 1 and Close < EntryPrice * (1 - StopPct) then
+	Sell ("LX-Stop") next bar at market;
+if MarketPosition = -1 and Close > EntryPrice * (1 + StopPct) then
+	BuyToCover ("SX-Stop") next bar at market;
+
+{ ---- 進場／反手（Buy 會自動回補空單，SellShort 會自動賣出多單） ---- }
+if buySig and MarketPosition <= 0 and shs > 0 then
+	Buy ("LE") shs shares next bar at market;
+if sellSig and MarketPosition >= 0 and shs > 0 then
+	SellShort ("SE") shs shares next bar at market;

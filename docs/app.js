@@ -1,4 +1,4 @@
-import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=5";
+import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=6";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
@@ -15,7 +15,7 @@ const FRESH = { cache: "no-cache" };
 
 let S;
 const stockCache = new Map();
-const state = { tab: "overview", period: "oos", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
+const state = { tab: "overview", period: "oos", universe: "stocks", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false } };
 const shown = new Set(["buy_hold", "dca"]);
 const shownMa = new Set(MAS.map(([n]) => n));
 try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
@@ -30,6 +30,9 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 const strat = (id) => S.strategies.find((s) => s.id === id) || cvStrat(id);
 const baseId = (id) => id.replace(/~cv$/, "");
 const isFold = (p) => S.folds.some((f) => f.id === p);
+const universeOf = (code) => (S.stocks.find((x) => x.code === code)?.kind === "etf" ? "etfs" : "stocks");
+const inUniverse = (s, u) => isBaseline(s) || (s.universe || "stocks") === u || s.universe === "all";
+const appliesTo = (s, st) => isBaseline(s) || !!st.pos?.[s.id];
 
 function cvStrat(id) {
   if (!id?.endsWith("~cv")) return undefined;
@@ -129,10 +132,15 @@ function renderOverview() {
   seg($("ovPeriod"), ["full", "is", "oos"].map((k) => [k, PERIOD_SHORT[k]]), p, (v) => { state.period = v; writeHash(); renderOverview(); });
   $("ovFold").value = isFold(p) ? p : "";
   $("ovMetric").value = state.metric;
+  seg($("ovUniverse"), Object.entries(S.universes || { stocks: { label: "股票" } }).map(([u, v]) => [u, v.label]), state.universe, (v) => {
+    state.universe = v;
+    renderOverview();
+  });
   renderCv();
+  renderPortfolio(p);
 
   const { key, asc } = state.sort;
-  const rows = S.board.filter((r) => r.period === p).sort((a, b) => {
+  const rows = S.board.filter((r) => r.period === p && (r.universe || "stocks") === state.universe).sort((a, b) => {
     const x = a[key] ?? -Infinity, y = b[key] ?? -Infinity;
     return asc ? x - y : y - x;
   });
@@ -148,7 +156,7 @@ function renderOverview() {
     renderOverview();
   }));
 
-  const x = Object.values(S.metrics.dca[p] || {}).map((m) => m.xirr).filter(isNum).sort((a, b) => a - b);
+  const x = Object.entries(S.metrics.dca[p] || {}).filter(([c]) => universeOf(c) === state.universe).map(([, m]) => m.xirr).filter(isNum).sort((a, b) => a - b);
   $("dcaNote").textContent = x.length ? `定期定額的資金加權報酬率（XIRR，考慮每月分批投入的時間）中位數為 ${pct(x[Math.floor(x.length / 2)])}；表中的年化報酬則以期初就準備好的全部本金計算，讓所有策略用同一個基準比較。` : "";
   renderHeat(p);
 }
@@ -162,10 +170,10 @@ const HEAT = {
 
 function renderHeat(p) {
   const H = HEAT[state.metric] || HEAT.cagr_diff;
-  const cols = S.strategies.filter((s) => s.id !== "buy_hold");
+  const cols = S.strategies.filter((s) => s.id !== "buy_hold" && inUniverse(s, state.universe));
   const bhAll = S.metrics.buy_hold[p] || {};
-  const head = `<thead><tr><th>股票</th><th>買進持有<br>年化報酬</th>${cols.map((s) => `<th title="${esc(s.family)}">${swatch(s)}<br>${esc(s.label)}</th>`).join("")}</tr></thead>`;
-  const body = S.stocks.map((st) => {
+  const head = `<thead><tr><th>${state.universe === "etfs" ? "ETF" : "股票"}</th><th>買進持有<br>年化報酬</th>${cols.map((s) => `<th title="${esc(s.family)}">${swatch(s)}<br>${esc(s.label)}</th>`).join("")}</tr></thead>`;
+  const body = S.stocks.filter((st) => universeOf(st.code) === state.universe).map((st) => {
     const bh = bhAll[st.code];
     const cells = cols.map((s) => {
       const m = S.metrics[s.id]?.[p]?.[st.code];
@@ -191,6 +199,60 @@ function renderHeat(p) {
   t.onmouseleave = hideTip;
 }
 
+const pfShown = new Set(["etf_buy_hold", "etf_dca", "ew_buy_hold"]);
+let pfChart = null, pfInit = false;
+
+function pfMeta(id) {
+  const lab = S.portfolio?.labels?.[id];
+  if (!lab) return strat(id);
+  const look = { etf_buy_hold: ["--ink", "solid"], etf_dca: ["--muted", "dash"], ew_buy_hold: ["--ink-2", "dot"] }[id];
+  return { id, label: lab, family: "基準", colorVar: look[0], style: look[1], bench: true };
+}
+
+function renderPortfolio(p) {
+  const P = S.portfolio;
+  $("pfSection").hidden = !P;
+  if (!P) return;
+  if (!pfInit) {
+    for (const s of S.strategies) if (s.portfolio_weights) pfShown.add(s.id);
+    pfInit = true;
+  }
+  pfChart?.remove();
+  pfChart = null;
+  const metrics = P.periods[p];
+  if (!metrics) {
+    $("pfTable").innerHTML = `<tbody><tr><td>投資組合計分板只計算全期、樣本內、樣本外，請切換期間。</td></tr></tbody>`;
+    $("lgPf").innerHTML = "";
+    return;
+  }
+  const ids = Object.keys(metrics).filter((id) => P.labels[id] || (strat(id) && !isBaseline(strat(id)) && inUniverse(strat(id), state.universe)));
+  ids.sort((a, b) => (metrics[b].sharpe ?? -9) - (metrics[a].sharpe ?? -9));
+  const rows = ids.map((id) => {
+    const s = pfMeta(id), m = metrics[id];
+    return `<tr class="${s.bench ? "baseline" : ""}"><td><span class="name-cell"><input type="checkbox" data-pf="${id}" ${pfShown.has(id) ? "checked" : ""} aria-label="畫出 ${esc(s.label)}">${swatch(s)}${esc(s.label)}${s.portfolio_weights ? ' <span class="family">投資組合策略</span>' : ""}</span></td>
+      <td class="${m.cagr >= 0 ? "pos" : "neg"}">${pct(m.cagr)}</td><td>${pct(m.mdd)}</td><td>${num(m.sharpe)}</td><td>${isNum(m.exposure) ? pct(m.exposure, 0) : "—"}</td><td>${isNum(m.turnover) ? pct(m.turnover, 0) : "—"}</td></tr>`;
+  }).join("");
+  $("pfTable").innerHTML = `<thead><tr><th>投資組合（勾選＝畫線）</th><th>年化報酬</th><th>最大回撤</th><th>Sharpe</th><th>平均持股</th><th>年換手率</th></tr></thead><tbody>${rows}</tbody>`;
+  $("pfTable").querySelectorAll("[data-pf]").forEach((cb) => (cb.onchange = () => {
+    cb.checked ? pfShown.add(cb.dataset.pf) : pfShown.delete(cb.dataset.pf);
+    renderPortfolio(p);
+  }));
+
+  pfChart = LWC.createChart($("chPf"), chartOptions(true));
+  pfChart.priceScale("right").applyOptions({ mode: LWC.PriceScaleMode.Logarithmic });
+  const legend = [];
+  for (const id of ids) {
+    if (!pfShown.has(id) || !P.equity[p]?.[id]) continue;
+    const s = pfMeta(id);
+    const ser = pfChart.addLineSeries({ color: cssVar(s.colorVar), lineWidth: 2, lineStyle: LS[s.style], priceLineVisible: false, lastValueVisible: true,
+      priceFormat: { type: "custom", formatter: (v) => v.toFixed(2) + "x", minMove: 0.01 } });
+    ser.setData(P.equity[p][id].map(([t, v]) => ({ time: t, value: v })));
+    legend.push(`<span class="item">${swatch(s)}${esc(s.label)}</span>`);
+  }
+  pfChart.timeScale().fitContent();
+  $("lgPf").innerHTML = `<span><b>資產曲線（週線，期初 = 1.00 倍）</b></span>` + legend.join("");
+}
+
 const CV_METRICS = {
   sharpe: { label: "Sharpe", fmt: (x) => num(x), clamp: 0.5 },
   cagr: { label: "年化報酬", fmt: (x) => pct(x), clamp: 0.15 },
@@ -198,7 +260,7 @@ const CV_METRICS = {
 };
 
 function renderCv() {
-  const T = S.cv_table;
+  const T = S.cv_tables?.[state.universe] || S.cv_table;
   $("cvSection").hidden = !T;
   if (!T) return;
   const key = state.cvMetric;
@@ -257,7 +319,7 @@ async function loadStock(code) {
 }
 
 function initStockControls() {
-  $("stockList").innerHTML = S.stocks.map((s) => `<option value="${s.code} ${esc(s.name)}"></option>`).join("");
+  $("stockList").innerHTML = S.stocks.map((s) => `<option value="${s.code} ${esc(s.name)}">${s.kind === "etf" ? "ETF" : "股票"}</option>`).join("");
   const pick = () => {
     const code = $("stockInput").value.trim().split(/\s+/)[0];
     const hit = S.stocks.find((s) => s.code === code) || S.stocks.find((s) => s.name.includes($("stockInput").value.trim()));
@@ -266,9 +328,6 @@ function initStockControls() {
   $("stockInput").addEventListener("change", pick);
   $("stockInput").addEventListener("keydown", (e) => { if (e.key === "Enter") pick(); });
   $("stockInput").addEventListener("focus", (e) => e.target.select());
-  const groups = {};
-  for (const s of S.strategies) (groups[s.family] ??= []).push(s);
-  $("focusSel").innerHTML = Object.entries(groups).map(([f, list]) => `<optgroup label="${esc(f)}">${list.map((s) => `<option value="${s.id}">${esc(s.label)}</option>`).join("")}</optgroup>`).join("");
   $("focusSel").onchange = () => setFocus($("focusSel").value);
   $("logScale").onchange = () => { state.log = $("logScale").checked; renderStock(); };
   const onDate = () => { state.from = $("fromDate").value; state.to = $("toDate").value; writeHash(); renderStock(); };
@@ -283,9 +342,23 @@ function setFocus(id) {
   renderStock();
 }
 
+// 買/加/賣/減 for long changes; 空/加空/補/減空 for 融券 shorts; 賣空 and 補買 when a fill crosses zero.
+function fillLabel(from, to) {
+  if (from >= 0 && to >= 0) return to > from ? (from === 0 ? "買" : "加") : to === 0 ? "賣" : "減";
+  if (from <= 0 && to <= 0) return to < from ? (from === 0 ? "空" : "加空") : to === 0 ? "補" : "減空";
+  return to < 0 ? "賣空" : "補買";
+}
+
+function focusOptions(st) {
+  const groups = {};
+  for (const s of S.strategies) if (appliesTo(s, st)) (groups[s.family] ??= []).push(s);
+  $("focusSel").innerHTML = Object.entries(groups).map(([f, list]) => `<optgroup label="${esc(f)}">${list.map((s) => `<option value="${s.id}">${esc(s.label)}</option>`).join("")}</optgroup>`).join("");
+}
+
 function runAll(st, i0, i1) {
   const out = {};
   for (const s of S.strategies) {
+    if (!appliesTo(s, st)) continue;
     let r;
     if (s.id === "buy_hold") r = simulate(st, new Float64Array(st.d.length).fill(1), i0, i1);
     else if (s.id === "dca") r = simulateDca(st, i0, i1);
@@ -317,6 +390,12 @@ async function renderStock() {
 
   const st = await loadStock(state.code);
   if (st.code !== state.code) return;
+  if (!appliesTo(strat(state.focus) || {}, st)) {
+    state.focus = S.strategies.find((s) => !isBaseline(s) && appliesTo(s, st))?.id || "buy_hold";
+    shown.add(state.focus);
+  }
+  focusOptions(st);
+  $("focusSel").value = state.focus;
   $("fromDate").min = $("toDate").min = st.d[0];
   $("fromDate").max = $("toDate").max = st.d[st.d.length - 1];
   if (state.period === "custom") { $("fromDate").value = state.from; $("toDate").value = state.to; }
@@ -391,7 +470,7 @@ function drawCharts(st, i0, i1, runs) {
   const fs = strat(state.focus), fcolor = cssVar(fs.colorVar), fills = runs[state.focus].fills;
   candle.setMarkers(fills.map((f) => {
     const buy = f.to > f.from;
-    const text = fills.length > 80 ? "" : buy ? (f.from === 0 ? "買" : "加") : f.to === 0 ? "賣" : "減";
+    const text = fills.length > 80 ? "" : fillLabel(f.from, f.to);
     return { time: st.d[f.i], position: buy ? "belowBar" : "aboveBar", color: fcolor, shape: buy ? "arrowUp" : "arrowDown", text };
   }));
 
@@ -416,7 +495,7 @@ function drawCharts(st, i0, i1, runs) {
   eqC.priceScale("right").applyOptions({ mode: state.log ? LWC.PriceScaleMode.Logarithmic : LWC.PriceScaleMode.Normal });
   const eqSeries = [];
   for (const s of S.strategies) {
-    if (!shown.has(s.id)) continue;
+    if (!shown.has(s.id) || !runs[s.id]) continue;
     const ser = eqC.addLineSeries({
       color: cssVar(s.colorVar), lineWidth: s.id === state.focus ? 3 : 2, lineStyle: LS[s.style], priceLineVisible: false, lastValueVisible: true,
       priceFormat: { type: "custom", formatter: (v) => v.toFixed(2) + "x", minMove: 0.01 },
@@ -468,7 +547,7 @@ function drawCharts(st, i0, i1, runs) {
 
 function renderStockTable(runs) {
   const cols = ["報酬率", "年化報酬", "最大回撤", "Sharpe", "平均持股", "調整次數", "完整交易", "勝率", "平均每筆", "平均持有"];
-  const rows = S.strategies.map((s) => {
+  const rows = S.strategies.filter((s) => runs[s.id]).map((s) => {
     const m = runs[s.id].m, base = isBaseline(s);
     const cagr = s.id === "dca" && isNum(m.xirr) ? `${pct(m.cagr)}<br><span class="muted">XIRR ${pct(m.xirr)}</span>` : pct(m.cagr);
     return `<tr class="${base ? "baseline" : ""} ${s.id === state.focus ? "focus" : ""}">

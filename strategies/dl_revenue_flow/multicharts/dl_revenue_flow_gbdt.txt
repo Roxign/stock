@@ -1,0 +1,72 @@
+﻿{ =====================================================================
+  dl_revenue_flow_gbdt ── 月營收＋籌碼 GBDT（月頻，只做多）
+  ---------------------------------------------------------------------
+  這個模型需要 MultiCharts 拿不到的資料（月營收、三大法人、外資持股、融資融券、
+  借券、本益比／股價淨值比／殖利率、美股與大盤資料），而且是梯度提升樹
+  （HistGradientBoosting，3 個種子 × 每年重訓），無法寫成 PowerLanguage 公式。
+  因此做法是：Python 每天（實際上每月一次即可）算好每檔的「目標曝險」，
+  匯出成 QuoteManager 可讀的 ASCII 價格檔，在每檔股票的圖表上當 data2 載入，
+  本腳本只負責「讀 data2 → 調整部位」。
+
+  一、匯出訊號（在 repo 根目錄執行）
+     1. 先更新資料（stocklab.data 的股價，stocklab.external 的 FinMind／Yahoo 資料）。
+        時間：交易日 t 收盤後，等 FinMind 晚上的三大法人／融資融券／借券（約 21:30）
+        與美股收盤（約隔天 05:00），在隔天 09:00 開盤前執行。
+     2. C:\Users\user\.venvs\stock\Scripts\python.exe -m strategies.dl_revenue_flow.export_signals
+        → 寫出 exports\dl_revenue_flow_gbdt\<代號>_RF.csv 與 <代號>_RFW.csv（不進版控）
+          格式：Date,Time,Open,High,Low,Close,Volume，例如 2026/10/02,13:30:00,150,150,150,150,1
+          價格 = 100 + 100 × 數值。
+          _RF.csv ：逐檔版（策略的 positions）：數值 = 目標曝險 0.5 或 1.0
+          _RFW.csv：投組版（策略的 weights，預測前 20 名）：數值 = 1 代表持有一個
+                    「1/20 資金」的部位，0 代表不持有（2012 年前為 1/50 等權 → 0.4）
+        訊號只在「營收公布日」（每月 10 日後第 2 個交易日）改變，其餘日子沿用。
+
+  二、QuoteManager
+     3. 為每檔建立一個自訂商品（例如 RF_2330），用 ASCII 匯入對應的 CSV，
+        欄位順序 Date, Time, Open, High, Low, Close, Volume，日期格式 yyyy/MM/dd。
+        每次重新匯出後要重新匯入（或用 ASCII Mapping 指到同一個檔案自動更新）。
+
+  三、圖表
+     4. data1 = 該股票日線（還原權值）；data2 = 對應的 RF_<代號> 商品（日線）。
+        兩者交易日必須一致；data2 第 t 根的值是「t 收盤後決定、t+1 開盤成交」的目標，
+        與本腳本「收盤計算、下一根開盤下單」的時序相同。
+     5. 逐檔版：Capital = 這檔股票分配到的資金（Python 回測是每檔獨立的 100% 資金）。
+        投組版：data2 改用 _RFW.csv，Capital = 帳戶總資金 ÷ 20，對 50 檔都套用。
+
+  四、Strategy Properties
+     6. Commission：買賣各 0.1425%；證交稅：賣出 0.3%（無法只對賣出收稅時，可用雙邊
+        各 0.2925% 近似，來回 0.585%，與 Python 回測相同）。滑價依實際情況設定。
+     7. Position Limits：勾選允許同方向多筆進場（"Allow up to N entry orders in the same
+        direction as the currently held position ─ regardless of the entry that generated
+        the order"），因為 0.5 → 1.0 是加碼。
+     8. MaxBarsBack 設 2 即可。LotSize：1 = 零股，1000 = 整張。
+
+  與 Python 回測的差異：Python 以「權益的比例」計算曝險，這裡以固定 Capital 換算股數，
+  並且只有在目標改變時才調整（不做每日再平衡），成交與部位會有小差異。
+  ===================================================================== }
+
+inputs:
+    Capital(1000000),
+    LotSize(1);
+
+vars:
+    Tgt(0), PrevTgt(-1), Qty(0), Cur(0);
+
+{ data2 收盤價 → 目標數值（0 ~ 1） }
+Tgt = (Close of data2 - 100) / 100;
+if Tgt < 0 then Tgt = 0;
+if Tgt > 1 then Tgt = 1;
+
+if Close > 0 and AbsValue(Tgt - PrevTgt) > 0.001 then begin
+    Qty = IntPortion(Capital * Tgt / Close / LotSize) * LotSize;
+    if MarketPosition = 1 then Cur = CurrentContracts else Cur = 0;
+    if Qty > Cur then
+        Buy ("RF_Add") Qty - Cur shares next bar at market
+    else if Qty < Cur then begin
+        if Qty <= 0 then
+            Sell ("RF_Exit") next bar at market
+        else
+            Sell ("RF_Cut") Cur - Qty shares total next bar at market;
+    end;
+    PrevTgt = Tgt;
+end;

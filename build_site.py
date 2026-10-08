@@ -15,13 +15,17 @@ import pandas as pd
 
 from stocklab import backtest as bt
 from stocklab import cv
-from stocklab.data import RAW_DIR, ROOT, download, load_all
-from stocklab.runner import BASELINES, POS_CACHE, discover, evaluate, leaderboard, print_leaderboard
-from stocklab.universe import DATA_DATE, NAMES, WEIGHTS
+from stocklab.data import RAW_DIR, ROOT, download
+from stocklab.etf import CODES as ETF_CODES, ETFS
+from stocklab.portfolio import BENCH_LABELS
+from stocklab.runner import (BASELINES, POS_CACHE, discover, evaluate, fees_of, leaderboard, load_everything,
+                             portfolio_results, print_leaderboard, print_portfolio)
+from stocklab.universe import CODES as STOCK_CODES, DATA_DATE, NAMES, WEIGHTS
 
 DOCS = ROOT / "docs"
 PERIODS = ("full", "is", "oos")
 FOLDS = cv.FOLDS
+UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
 
 
 def latest_block(sid, board, cv_rows, cv_meta):
@@ -54,6 +58,24 @@ def latest_block(sid, board, cv_rows, cv_meta):
         lines += ["", text + "。"]
     lines += ["", "下方說明中的數字是研究當時的結果，資料更新後可能略有差異，請以本表與總覽頁為準。", "", "---", ""]
     return "\n".join(lines)
+
+
+def name_of(code):
+    return NAMES.get(code) or ETFS[code]["name"]
+
+
+def portfolio_export(pf_results):
+    """Portfolio metrics per period, plus weekly equity curves (multiple of starting capital) for each period."""
+    out = {"labels": BENCH_LABELS, "periods": {}, "equity": {}}
+    for p, rows in pf_results.items():
+        out["periods"][p] = {k: r["metrics"] for k, r in rows.items() if r}
+        out["equity"][p] = {}
+        for k, r in rows.items():
+            if not r:
+                continue
+            w = (r["equity"] / bt.CAPITAL).resample("W-FRI").last().dropna()
+            out["equity"][p][k] = [[d.strftime("%Y-%m-%d"), round(float(v), 4)] for d, v in w.items()]
+    return out
 
 
 def cross_validated(strategy, data, use_cache):
@@ -109,7 +131,7 @@ def main():
 
     if args.download or not any(RAW_DIR.glob("*.csv")):
         download()
-    data = load_all()
+    data = load_everything()
     strategies = discover(args.families.split(",") if args.families else None)
     results = evaluate(strategies, data, PERIODS + FOLDS, use_cache=args.cached)
     labels = {b["id"]: b["label"] for b in BASELINES} | {s["id"]: s["label"] for s in strategies}
@@ -124,25 +146,39 @@ def main():
             labels[cid] = f"{s['label']}（交叉驗證）"
             cv_meta[s["id"]] = {"mode": out["mode"], "chosen": out["chosen"]}
             table_ids.append(cid)
-    board = pd.concat([leaderboard(main_results, labels, PERIODS), leaderboard(results, labels, FOLDS)], ignore_index=True)
-    print_leaderboard(board[board["period"].isin(PERIODS)])
-    cv_rows, cv_bh = cv.fold_table(results, table_ids, labels)
-    cv.print_fold_table(cv_rows, cv_bh)
+    boards, cv_tables = [], {}
+    for u, (_, codes) in UNIVERSES.items():
+        b = pd.concat([leaderboard(main_results, labels, PERIODS, codes=codes), leaderboard(results, labels, FOLDS, codes=codes)],
+                      ignore_index=True)
+        b["universe"] = u
+        boards.append(b)
+        rows, bh = cv.fold_table(results, table_ids, labels, codes=codes)
+        cv_tables[u] = {"rows": rows, "bh": bh}
+        print(f"\n##### {UNIVERSES[u][0]}")
+        print_leaderboard(b[b["period"].isin(PERIODS)])
+        cv.print_fold_table(rows, bh)
+    board = pd.concat(boards, ignore_index=True)
+    pf_results = portfolio_results(strategies, data, PERIODS, use_cache=True)
+    print_portfolio(pf_results)
 
     for sub in ("data/stocks", "multicharts", "research"):
         shutil.rmtree(DOCS / sub, ignore_errors=True)
 
-    for name in ("diagnosis.md", "dl_literature.md", "data_sources.md"):
+    for name in ("diagnosis.md", "dl_literature.md", "data_sources.md", "short_rules.md", "etf_data.md"):
         src = ROOT / "research" / name
         if src.exists():
             dst = DOCS / "research" / name
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
 
-    meta = [dict(b, research=None) for b in BASELINES]
+    meta = [dict(b, research=None, universe="all") for b in BASELINES]
     for s in strategies:
+        u = s.get("universe", "stocks")
         m = {k: s[k] for k in ("id", "label", "family", "description")}
-        m["description"] = latest_block(s["id"], board, cv_rows, cv_meta) + s["description"]
+        m["universe"] = u
+        m["portfolio_weights"] = bool(s.get("weights"))
+        key = "etfs" if u == "etfs" else "stocks"
+        m["description"] = latest_block(s["id"], board[board["universe"] == key], cv_tables[key]["rows"], cv_meta) + s["description"]
         m["multicharts"] = m["research"] = None
         if s.get("multicharts"):
             dst = DOCS / "multicharts" / f"{s['id']}.txt"
@@ -161,14 +197,16 @@ def main():
     for code, df in data.items():
         write_json(DOCS / "data" / "stocks" / f"{code}.json", {
             "code": code,
-            "name": NAMES[code],
+            "name": name_of(code),
+            "kind": "etf" if code in ETF_CODES else "stock",
+            "fees": fees_of(code),
             "d": [d.strftime("%Y-%m-%d") for d in df.index],
             "o": df["open"].round(4).tolist(),
             "h": df["high"].round(4).tolist(),
             "l": df["low"].round(4).tolist(),
             "c": df["close"].round(4).tolist(),
             "v": (df["volume"] / 1000).round().astype(int).tolist(),
-            "pos": {sid: encode_positions(p[code], df.index) for sid, p in positions.items()},
+            "pos": {sid: encode_positions(p[code], df.index) for sid, p in positions.items() if code in p},
         })
 
     write_json(DOCS / "data" / "summary.json", {
@@ -178,11 +216,13 @@ def main():
         "periods": {p: {"start": s, "end": e, "label": bt.PERIOD_LABELS[p]} for p, (s, e) in bt.ALL_PERIODS.items()},
         "folds": [{"id": f, "label": bt.FOLD_LABELS[f]} for f in FOLDS],
         "cv": cv_meta,
-        "cv_table": {"rows": cv_rows, "bh": cv_bh},
+        "cv_tables": cv_tables,
+        "universes": {u: {"label": lab, "codes": list(codes)} for u, (lab, codes) in UNIVERSES.items()},
         "strategies": meta,
-        "stocks": [{"code": c, "name": NAMES[c], "weight": WEIGHTS[c], "start": df.index[0].strftime("%Y-%m-%d"),
-                    "end": df.index[-1].strftime("%Y-%m-%d")} for c, df in data.items()],
+        "stocks": [{"code": c, "name": name_of(c), "kind": "etf" if c in ETF_CODES else "stock", "weight": WEIGHTS.get(c),
+                    "start": df.index[0].strftime("%Y-%m-%d"), "end": df.index[-1].strftime("%Y-%m-%d")} for c, df in data.items()],
         "board": board.to_dict("records"),
+        "portfolio": portfolio_export(pf_results),
         "metrics": {sid: {p: {c: r["metrics"] for c, r in by_code.items() if r} for p, by_code in by_p.items()}
                     for sid, by_p in results.items()},
     })

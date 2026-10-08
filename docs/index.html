@@ -6,10 +6,10 @@
   <title>台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 成分股交易策略回測：KD/MACD 規則、深度學習、趨勢追蹤、均值回歸，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </head>
 <body>
   <header class="top">
@@ -32,6 +32,7 @@
 
     <section id="view-overview" hidden>
       <div class="filters">
+        <div class="seg" id="ovUniverse" role="group" aria-label="標的"></div>
         <div class="seg" id="ovPeriod" role="group" aria-label="期間"></div>
         <label class="field">或選交叉驗證的某一折
           <select id="ovFold"></select>
@@ -51,6 +52,8 @@
         <span class="callout-links">
           <button type="button" class="btn" data-doc="research/diagnosis.md" data-title="問題診斷與改進方向">診斷報告</button>
           <button type="button" class="btn" data-doc="research/dl_literature.md" data-title="深度學習交易策略文獻回顧">深度學習文獻回顧</button>
+          <button type="button" class="btn" data-doc="research/short_rules.md" data-title="台灣融券（放空）規則">放空規則</button>
+          <button type="button" class="btn" data-doc="research/etf_data.md" data-title="黃金、石油、美債 ETF 資料">ETF 資料說明</button>
         </span>
       </div>
 
@@ -60,6 +63,16 @@
       <strong>樣本內</strong>（2010–2020）是開發策略、調整參數用的資料；<strong>樣本外</strong>（2021–今）是開發時刻意不看的資料，用來檢驗策略是否真的有效，<strong>請以樣本外為主要判斷依據</strong>。</p>
       <div class="table-wrap"><table id="board" class="data"></table></div>
       <p class="note" id="dcaNote"></p>
+
+      <section id="pfSection">
+        <h2>投資組合計分板（同一個帳戶）</h2>
+        <p class="note">把策略放在同一個帳戶回測（逐檔策略每檔各分 1/N 資金；多資產策略直接給權重），和真正可投資的 <strong>0050 買進持有、0050 定期定額</strong>比較。「50 檔等權買進持有」用的是今天的成分股，有倖存者偏差，只能當參考。上方「股票／ETF」切換決定列出哪一類策略。</p>
+        <div class="table-wrap"><table id="pfTable" class="data"></table></div>
+        <div class="panel">
+          <div class="pane-legend" id="lgPf"></div>
+          <div class="chart chart-eq" id="chPf"></div>
+        </div>
+      </section>
 
       <section id="cvSection">
         <h2>交叉驗證（8 折）</h2>

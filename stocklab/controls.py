@@ -73,13 +73,18 @@ def vol_target(pos, df, period, n=20):
 
 def evaluate_controls(sid, positions, data, periods):
     """results[f"{sid}~{kind}"][period][code] in the same shape as runner.evaluate."""
-    shuf = shuffled(positions, data)
+    from .runner import fees_of
+
+    data = {c: data[c] for c in positions}
+    shuf = bt.effective_positions(shuffled(positions, data), data)
     out = {f"{sid}~{k}": {p: {} for p in periods} for k in CONTROL_LABELS}
+
+    def run(c, df, target, p):
+        return None if target is None else bt.run_strategy(df, bt.enforce_short_rules(c, df, target), p, fees_of(c))
+
     for p in periods:
         for c, df in data.items():
-            const = constant_exposure(positions[c], df, p)
-            vt = vol_target(positions[c], df, p)
-            out[f"{sid}~const"][p][c] = None if const is None else bt.run_strategy(df, const, p)
-            out[f"{sid}~shuffle"][p][c] = bt.run_strategy(df, shuf[c], p)
-            out[f"{sid}~voltarget"][p][c] = None if vt is None else bt.run_strategy(df, vt, p)
+            out[f"{sid}~const"][p][c] = run(c, df, constant_exposure(positions[c], df, p), p)
+            out[f"{sid}~shuffle"][p][c] = run(c, df, shuf[c], p)
+            out[f"{sid}~voltarget"][p][c] = run(c, df, vol_target(positions[c], df, p), p)
     return out

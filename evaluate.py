@@ -12,9 +12,14 @@ import argparse
 
 from stocklab import cv
 from stocklab.controls import evaluate_controls
-from stocklab.data import RAW_DIR, download, load_all
-from stocklab.runner import (check_lookahead, compute_positions, discover, evaluate, leaderboard, portfolio_results,
+from stocklab.data import RAW_DIR, download
+from stocklab.runner import (check_lookahead, compute_positions, discover, evaluate, leaderboard, load_everything, portfolio_results,
                              print_leaderboard, print_portfolio)
+
+from stocklab.etf import CODES as ETF_CODES  # noqa: E402
+from stocklab.universe import CODES as STOCK_CODES  # noqa: E402
+
+UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--family", help="strategies/<family> folder name")
@@ -29,7 +34,7 @@ args = ap.parse_args()
 
 if not any(RAW_DIR.glob("*.csv")):
     download()
-data = load_all()
+data = load_everything()
 strategies = discover([args.family] if args.family else None)
 if args.ids:
     want = set(args.ids.split(","))
@@ -47,7 +52,11 @@ labels = {s["id"]: s["label"] for s in strategies}
 if args.controls:
     for s in strategies:
         results |= evaluate_controls(s["id"], compute_positions(s, data, use_cache=True), data, periods)
-print_leaderboard(leaderboard(results, labels, periods))
+used = {s.get("universe", "stocks") for s in strategies}
+shown = [u for u in UNIVERSES if u in used or "all" in used]
+for u in shown:
+    print(f"\n##### {UNIVERSES[u][0]}")
+    print_leaderboard(leaderboard(results, labels, periods, codes=UNIVERSES[u][1]))
 if args.portfolio:
     print_portfolio(portfolio_results(strategies, data, periods))
 if args.cv:
@@ -62,5 +71,7 @@ if args.cv:
                 print(f"\n{s['id']} 每折選出的參數（grid {out['grid_size']} 組）:")
                 for f, p in out["chosen"].items():
                     print(f"  {f}: {p}")
-    rows, bh = cv.fold_table(fold_res, ["dca"] + ids, labels)
-    cv.print_fold_table(rows, bh)
+    for u in shown:
+        print(f"\n##### {UNIVERSES[u][0]}")
+        rows, bh = cv.fold_table(fold_res, ["dca"] + ids, labels, codes=UNIVERSES[u][1])
+        cv.print_fold_table(rows, bh)

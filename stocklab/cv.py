@@ -21,7 +21,10 @@ FOLDS = tuple(bt.FOLDS)
 
 
 def run_folds(data, positions):
-    return {f: {c: bt.run_strategy(df, positions[c], f) for c, df in data.items()} for f in FOLDS}
+    from .runner import fees_of
+
+    positions = bt.effective_positions(positions, {c: data[c] for c in positions})
+    return {f: {c: bt.run_strategy(data[c], p, f, fees_of(c)) for c, p in positions.items()} for f in FOLDS}
 
 
 def fold_median(results, key="sharpe"):
@@ -48,6 +51,9 @@ def purged(strategy, data):
 
 
 def cross_validate(strategy, data):
+    from .runner import universe_data
+
+    data = universe_data(strategy, data)
     if strategy.get("cv_positions"):
         return purged(strategy, data)
     if strategy.get("param_grid"):
@@ -55,9 +61,14 @@ def cross_validate(strategy, data):
     return None
 
 
-def fold_table(results, ids, labels):
+def fold_table(results, ids, labels, codes=None):
     """Rows per id: fold-median Sharpe/CAGR/MDD next to buy-and-hold, and how many folds each beats it in.
-    results[id][fold][code] must include 'buy_hold'."""
+    results[id][fold][code] must include 'buy_hold'. codes restricts the securities (ids with none are skipped)."""
+    if codes is not None:
+        keep = set(codes)
+        results = {sid: {f: {c: r for c, r in by_c.items() if c in keep} for f, by_c in by_f.items()}
+                   for sid, by_f in results.items()}
+        ids = [sid for sid in ids if any(results[sid][f] for f in FOLDS)]
     bh = {f: {k: fold_median(results["buy_hold"][f], k) for k in ("sharpe", "cagr", "mdd")} for f in FOLDS}
     rows = []
     for sid in ids:

@@ -2,13 +2,19 @@
 
 **網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可，逐檔檢視每個策略的買賣點與績效）
 
-以元大台灣50（0050）的 50 檔成分股為對象，研究多種交易策略，並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：每個策略都附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
+以元大台灣50（0050）的 50 檔成分股，以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究多種交易策略（可做多、也可依台灣融券規則放空），並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
+
+**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)
 
 - 研究方向（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
   - `kdj_macd_rule` — KDJ + MACD 規則型
+  - `kdj_macd_rebound` — KDJ 與 MACD 同步翻揚買進、轉弱賣出（含停損）
   - `kdj_macd_dl` — KDJ + MACD 結合小型深度學習模型
+  - `dl_position`、`dl_revenue_flow`、`dl_market_state`、`dl_cross_stock`、`dl_trend_labels` — 深度學習第二輪（直接輸出部位、月營收＋籌碼、大盤狀態、跨股注意力、趨勢標籤），文獻回顧見 `research/dl_literature.md`
   - `trend` — 趨勢追蹤
   - `mean_reversion` — 均值回歸
+  - `long_short` — 多空策略（台灣融券規則，見 `research/short_rules.md`）
+  - `multi_asset` — 0050／黃金／美債／石油的多資產配置（投資組合層級，見 `research/etf_data.md`）
 
 ## 回測方法
 

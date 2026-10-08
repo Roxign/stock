@@ -1,33 +1,34 @@
-"""Portfolio-level backtest: one account that can hold any of the 50 stocks plus cash, benchmarked on the 0050 ETF.
+"""Portfolio-level backtest: one account holding any of the 50 stocks and the ETFs (long or 融券 short) plus cash.
 
-Per-stock strategies map to equal capital slots (weight = exposure / N). Cross-sectional strategies can instead
-provide target weights of total equity directly (sum <= 1). Same timing as the single-stock engine: weights decided at
-bar t's close are filled at bar t+1's open, and a stock is only traded when its target weight changes.
+Per-security strategies map to equal capital slots over their own universe (weight = exposure / N). Portfolio
+strategies can instead provide target weights of total equity directly (gross sum |w| <= 1, the rest is cash).
+Same timing as the single-security engine: weights decided at bar t's close are filled at bar t+1's open, and a
+security is only traded when its target weight changes. Each security pays its own costs (stocklab.shortrules.fees).
 """
 
 import numpy as np
 import pandas as pd
 
 from . import backtest as bt
-from .data import RAW_DIR, download, load
 
 ETF = "0050"
-ETF_SELL_FEE = 0.001425 + 0.001  # ETF transaction tax is 0.1%
 
 
 def load_etf():
-    if not (RAW_DIR / f"{ETF}.csv").exists():
-        download([ETF])
-    return load(ETF)
+    from .etf import load_etf as _load
+
+    return _load(ETF)
 
 
 def per_stock_weights(positions, data, n=None):
-    """Equal capital slots: each stock gets 1/n of equity times its own exposure."""
-    n = n or len(data)
+    """Equal capital slots: each security gets 1/n of equity times its own exposure (n = securities traded)."""
+    n = n or len(positions)
     return {c: bt.clean_target(p, data[c].index) / n for c, p in positions.items()}
 
 
-def simulate(data, weights, period, sell_fee=bt.SELL_FEE):
+def simulate(data, weights, period):
+    from .runner import fees_of
+
     codes = sorted(weights)
     opens = pd.DataFrame({c: data[c]["open"] for c in codes}).sort_index()
     closes = pd.DataFrame({c: data[c]["close"] for c in codes}).reindex(opens.index)
@@ -37,11 +38,15 @@ def simulate(data, weights, period, sell_fee=bt.SELL_FEE):
         return None
     i0, i1 = b
     W = pd.DataFrame({c: weights[c].reindex(data[c].index).astype(float).fillna(0.0) for c in codes}).reindex(idx)
-    target = W.ffill().fillna(0.0).clip(lower=0.0).shift(1).fillna(0.0).to_numpy()
-    total = target.sum(axis=1, keepdims=True)
-    target = np.where(total > 1 + 1e-9, target / np.where(total > 0, total, 1), target)
+    target = W.ffill().fillna(0.0).clip(-1.0, 1.0).shift(1).fillna(0.0).to_numpy()
+    gross = np.abs(target).sum(axis=1, keepdims=True)
+    target = np.where(gross > 1 + 1e-9, target / np.where(gross > 0, gross, 1), target)
     O = opens.to_numpy()
     C = closes.ffill().to_numpy()
+    fees = [fees_of(c) for c in codes]
+    buy = np.array([f["buy"] for f in fees])
+    sell = np.array([f["sell"] for f in fees])
+    short = np.array([f["short"] for f in fees])
 
     cash, n = float(bt.CAPITAL), len(codes)
     sh, cur = np.zeros(n), np.zeros(n)
@@ -54,16 +59,28 @@ def simulate(data, weights, period, sell_fee=bt.SELL_FEE):
         if chg.any():
             mark = np.where(np.isnan(o), C[i - 1], o)
             equity = cash + np.nansum(sh * mark)
-            for j in np.flatnonzero(chg & (t < cur)):
-                d = sh[j] if t[j] == 0 else sh[j] - t[j] * equity / o[j]
-                cash += d * o[j] * (1 - sell_fee)
-                sh[j] -= d
-                traded += d * o[j]
-            for j in np.flatnonzero(chg & (t > cur)):
-                d = min(t[j] * equity / o[j] - sh[j], cash / (o[j] * (1 + bt.BUY_FEE)))
-                if d > 0:
-                    cash -= d * o[j] * (1 + bt.BUY_FEE)
+            want = np.where(chg, t * equity / np.where(np.isnan(o), 1, o), sh)
+            for j in np.flatnonzero(chg):  # reductions first: sell longs, cover shorts
+                if sh[j] > 0 and want[j] < sh[j]:
+                    d = sh[j] if want[j] <= 0 else sh[j] - want[j]
+                    cash += d * o[j] * (1 - sell[j])
+                    sh[j] -= d
+                    traded += d * o[j]
+                elif sh[j] < 0 and want[j] > sh[j]:
+                    d = -sh[j] if want[j] >= 0 else want[j] - sh[j]
+                    cash -= d * o[j] * (1 + buy[j])
                     sh[j] += d
+                    traded += d * o[j]
+            for j in np.flatnonzero(chg):  # then increases: buy longs (cash permitting), open shorts
+                if want[j] > 0 and want[j] > sh[j]:
+                    d = min(want[j] - sh[j], max(cash, 0.0) / (o[j] * (1 + buy[j])))
+                    cash -= d * o[j] * (1 + buy[j])
+                    sh[j] += d
+                    traded += d * o[j]
+                elif want[j] < 0 and want[j] < sh[j]:
+                    d = sh[j] - want[j]
+                    cash += d * o[j] * (1 - sell[j] - short[j])
+                    sh[j] -= d
                     traded += d * o[j]
             cur[chg] = t[chg]
         held = np.nansum(sh * C[i])
@@ -81,13 +98,16 @@ def run(data, weights, period):
 
 def benchmarks(data, period):
     """0050 buy-and-hold, 0050 定期定額, and an equal-weight buy-and-hold of the 50 stocks."""
+    from .runner import fees_of
+    from .universe import CODES
+
     etf = load_etf()
-    out = {
-        "etf_buy_hold": simulate({ETF: etf}, {ETF: pd.Series(1.0, index=etf.index)}, period, sell_fee=ETF_SELL_FEE),
-        "etf_dca": bt.run_dca(etf, period),
-        "ew_buy_hold": simulate(data, {c: pd.Series(1.0 / len(data), index=df.index) for c, df in data.items()}, period),
+    stocks = {c: data[c] for c in CODES if c in data}
+    return {
+        "etf_buy_hold": simulate({ETF: etf}, {ETF: pd.Series(1.0, index=etf.index)}, period),
+        "etf_dca": bt.run_dca(etf, period, fees_of(ETF)),
+        "ew_buy_hold": simulate(stocks, {c: pd.Series(1.0 / len(stocks), index=df.index) for c, df in stocks.items()}, period),
     }
-    return out
 
 
 BENCH_LABELS = {"etf_buy_hold": "0050 買進持有", "etf_dca": "0050 定期定額", "ew_buy_hold": "50 檔等權買進持有"}

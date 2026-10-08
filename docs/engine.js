@@ -38,8 +38,16 @@ export function expandTarget(changes, n) {
   return t;
 }
 
+// Per-security costs: stock.fees = { buy, sell (incl. transaction tax), short (extra 融券 fee) }.
+const feesOf = (stock) => stock.fees || { buy: ENGINE.buyFee, sell: ENGINE.sellFee, short: 0 };
+
+const tradeRet = (side, entryPx, exitPx, f) =>
+  side > 0 ? (exitPx * (1 - f.sell)) / (entryPx * (1 + f.buy)) - 1 : (entryPx * (1 - f.sell - f.short)) / (exitPx * (1 + f.buy)) - 1;
+
+// Exposure in [-1, 1]; negative = short. Targets are already rule-adjusted (stocklab.backtest.enforce_short_rules).
 export function simulate(stock, target, i0, i1) {
-  const { o, c } = stock, { capital, buyFee, sellFee } = ENGINE;
+  const { o, c } = stock, { capital } = ENGINE;
+  const f = feesOf(stock), buy = f.buy, sell = f.sell, short = f.short || 0;
   const n = i1 - i0 + 1, eq = new Float64Array(n), invested = new Float64Array(n);
   const trades = [], fills = [];
   let cash = capital, sh = 0, cur = 0, entry = null;
@@ -47,33 +55,55 @@ export function simulate(stock, target, i0, i1) {
     const t = target[i - 1];
     if (Math.abs(t - cur) > 1e-9) {
       const px = o[i];
-      let d = (t * (cash + sh * px)) / px - sh;
-      if (d > 0) {
-        d = Math.min(d, cash / (px * (1 + buyFee)));
-        cash -= d * px * (1 + buyFee);
-        sh += d;
-      } else if (d < 0) {
-        if (t === 0) d = -sh;
-        cash += -d * px * (1 - sellFee);
-        sh += d;
+      if (t >= 0 && cur >= 0) {
+        let d = (t * (cash + sh * px)) / px - sh;
+        if (d > 0) {
+          d = Math.min(d, cash / (px * (1 + buy)));
+          cash -= d * px * (1 + buy);
+          sh += d;
+        } else if (d < 0) {
+          if (t === 0) d = -sh;
+          cash += -d * px * (1 - sell);
+          sh += d;
+        }
+      } else if (t <= 0 && cur <= 0) {
+        let d = (t * (cash + sh * px)) / px - sh;
+        if (d < 0) {
+          cash += -d * px * (1 - sell - short);
+          sh += d;
+        } else if (d > 0) {
+          if (t === 0) d = -sh;
+          cash -= d * px * (1 + buy);
+          sh += d;
+        }
+      } else {
+        cash += sh > 0 ? sh * px * (1 - sell) : sh * px * (1 + buy);
+        let want = (t * cash) / px;
+        if (t > 0) {
+          want = Math.min(want, cash / (px * (1 + buy)));
+          cash -= want * px * (1 + buy);
+        } else {
+          cash += -want * px * (1 - sell - short);
+        }
+        sh = want;
       }
       fills.push({ i, from: cur, to: t, px });
-      if (cur === 0 && t > 0) entry = { i, px };
-      else if (cur > 0 && t === 0 && entry) {
-        trades.push({ entry: entry.i, exit: i, entryPx: entry.px, exitPx: px, ret: (px * (1 - sellFee)) / (entry.px * (1 + buyFee)) - 1 });
+      if (cur !== 0 && (t === 0 || t > 0 !== cur > 0) && entry) {
+        trades.push({ entry: entry.i, exit: i, entryPx: entry.px, exitPx: px, side: entry.side, ret: tradeRet(entry.side, entry.px, px, f) });
         entry = null;
       }
+      if (t !== 0 && (cur === 0 || t > 0 !== cur > 0)) entry = { i, px, side: t > 0 ? 1 : -1 };
       cur = t;
     }
     eq[k] = cash + sh * c[i];
     invested[k] = (sh * c[i]) / eq[k];
   }
-  if (entry) trades.push({ entry: entry.i, exit: null, entryPx: entry.px, exitPx: c[i1], ret: (c[i1] * (1 - sellFee)) / (entry.px * (1 + buyFee)) - 1 });
+  if (entry) trades.push({ entry: entry.i, exit: null, entryPx: entry.px, exitPx: c[i1], side: entry.side, ret: tradeRet(entry.side, entry.px, c[i1], f) });
   return { eq, invested, trades, fills };
 }
 
 export function simulateDca(stock, i0, i1) {
-  const { d, o, c } = stock, { capital, buyFee } = ENGINE;
+  const { d, o, c } = stock, { capital } = ENGINE, buyFee = feesOf(stock).buy;
   const n = i1 - i0 + 1, first = new Uint8Array(n);
   let months = 0, prev = "";
   for (let k = 0; k < n; k++) {

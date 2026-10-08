@@ -35,13 +35,31 @@ def discover(families=None):
     return out
 
 
+def universe_data(strategy, data):
+    """The securities a strategy trades: 'stocks' (default, the 50), 'etfs', or 'all'."""
+    from .etf import CODES as ETF_CODES
+    from .universe import CODES as STOCK_CODES
+
+    want = {"stocks": set(STOCK_CODES), "etfs": set(ETF_CODES), "all": set(STOCK_CODES) | set(ETF_CODES)}[strategy.get("universe", "stocks")]
+    return {c: df for c, df in data.items() if c in want}
+
+
+def fees_of(code):
+    from .shortrules import fees
+
+    return fees(code)
+
+
 def compute_positions(strategy, data, use_cache=False):
+    """Strategy targets after Taiwan short-selling rules (bt.enforce_short_rules), cached per strategy."""
     path = POS_CACHE / f"{strategy['id']}.pkl"
     if use_cache and path.exists():
         return pd.read_pickle(path)
     t = time.time()
-    pos = strategy["positions"](data)
-    validate(strategy["id"], pos, data)
+    udata = universe_data(strategy, data)
+    pos = strategy["positions"](udata)
+    validate(strategy["id"], pos, udata)
+    pos = bt.effective_positions(pos, udata)
     POS_CACHE.mkdir(parents=True, exist_ok=True)
     pd.to_pickle(pos, path)
     print(f"  {strategy['id']}: positions in {time.time() - t:.1f}s")
@@ -56,14 +74,15 @@ def validate(sid, pos, data):
         if not isinstance(s, pd.Series):
             raise TypeError(f"{sid}/{code}: positions must be a pandas Series")
         s = s.reindex(data[code].index)
-        if ((s < -1e-9) | (s > 1 + 1e-9)).any():
-            raise ValueError(f"{sid}/{code}: positions must be within [0, 1]")
+        if ((s < -1 - 1e-9) | (s > 1 + 1e-9)).any():
+            raise ValueError(f"{sid}/{code}: positions must be within [-1, 1]")
 
 
 def check_lookahead(strategy, data, cuts=("2014-06-30", "2018-03-30", "2022-09-30"), tol=0.01):
     """Recompute positions (and portfolio weights, if provided) on data truncated at each cut date;
     any change before the cut means future data leaked in."""
     ok = True
+    data = universe_data(strategy, data)
     for key in ("positions", "weights"):
         fn = strategy.get(key)
         if fn is None:
@@ -90,21 +109,27 @@ def evaluate(strategies, data, periods=("is", "oos", "full"), use_cache=False):
     results = {}
     for b in BASELINES:
         runner = bt.run_buy_hold if b["id"] == "buy_hold" else bt.run_dca
-        results[b["id"]] = {p: {c: runner(df, p) for c, df in data.items()} for p in periods}
+        results[b["id"]] = {p: {c: runner(df, p, fees_of(c)) for c, df in data.items()} for p in periods}
     for s in strategies:
         pos = compute_positions(s, data, use_cache)
-        results[s["id"]] = {p: {c: bt.run_strategy(df, pos[c], p) for c, df in data.items()} for p in periods}
+        udata = universe_data(s, data)
+        results[s["id"]] = {p: {c: bt.run_strategy(df, pos[c], p, fees_of(c)) for c, df in udata.items()} for p in periods}
     return results
 
 
-def leaderboard(results, labels, periods=("is", "oos", "full")):
+def leaderboard(results, labels, periods=("is", "oos", "full"), codes=None):
+    """Medians across securities; codes restricts the set (e.g. the 50 stocks or the ETFs). Rows with no securities
+    in the set are skipped."""
     rows = []
+    keep = None if codes is None else set(codes)
     for p in periods:
         bh = results["buy_hold"][p]
         dca = results["dca"][p]
         for sid, by_p in results.items():
             res = by_p[p]
-            codes = [c for c, r in res.items() if r]
+            codes = [c for c, r in res.items() if r and (keep is None or c in keep)]
+            if not codes:
+                continue
             m = {c: res[c]["metrics"] for c in codes}
             beat_bh = np.mean([m[c]["cagr"] > bh[c]["metrics"]["cagr"] for c in codes])
             beat_bh_sharpe = np.mean([m[c]["sharpe"] > bh[c]["metrics"]["sharpe"] for c in codes])
@@ -141,15 +166,25 @@ def portfolio_results(strategies, data, periods, use_cache=True):
     from . import portfolio as pf
 
     out = {}
+    weights = {}
+    for s in strategies:
+        if s.get("weights"):
+            weights[s["id"]] = s["weights"](universe_data(s, data))
+        else:
+            weights[s["id"]] = pf.per_stock_weights(compute_positions(s, data, use_cache), data)
     for p in periods:
         out[p] = pf.benchmarks(data, p)
-        for s in strategies:
-            if s.get("weights"):
-                w = s["weights"](data)
-            else:
-                w = pf.per_stock_weights(compute_positions(s, data, use_cache), data)
-            out[p][s["id"]] = pf.run(data, w, p)
+        for sid, w in weights.items():
+            out[p][sid] = pf.run(data, w, p)
     return out
+
+
+def load_everything():
+    """The 50 stocks plus the ETFs (0050, gold, oil, US Treasuries), keyed by code."""
+    from .data import load_all
+    from .etf import load_all_etfs
+
+    return load_all() | load_all_etfs()
 
 
 def print_portfolio(results):
