@@ -37,7 +37,7 @@ GRID = np.round(np.linspace(-0.10, 0.10, 41), 4)  # next close vs last close, 0.
 BISECT = 8                 # 0.5% / 2^8 = 0.002%: finer than any tick
 WINDOW = 800               # trailing bars used for trigger scans (indicators and rule states settle well within this)
 CHECK = 60                 # ...accepted only if its decisions match the full history on the last CHECK bars
-PER_STOCK_FAMILIES = {"kdj_macd_rule", "kdj_macd_rebound", "trend", "mean_reversion", "long_short"}
+PER_STOCK_FAMILIES = {"kdj_macd_rule", "kdj_macd_rebound", "kdj_macd_lab", "trend", "mean_reversion", "long_short"}
 PER_STOCK_IDS = {"kdj_macd_dl_base"}  # the no-DL rule inside a DL family (its siblings would retrain models)
 WEIGHT_FAMILIES = {"multi_asset"}
 HORIZONS = (5, 20)

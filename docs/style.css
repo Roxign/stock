@@ -16,6 +16,7 @@
   --s4: #eda100;
   --s5: #e87ba4;
   --s7: #4a3aa7;
+  --lab: #c2185b;
   --up: #e34948;
   --down: #008300;
   --div-pos: #e34948;
@@ -44,6 +45,7 @@
     --s4: #c98500;
     --s5: #d55181;
   --s7: #9085e9;
+    --lab: #ec6aa0;
     --up: #e66767;
     --down: #0ca30c;
     --div-pos: #e66767;
@@ -71,6 +73,7 @@
   --s4: #c98500;
   --s5: #d55181;
   --s7: #9085e9;
+  --lab: #ec6aa0;
   --up: #e66767;
   --down: #0ca30c;
   --div-pos: #e66767;
@@ -293,6 +296,27 @@ table.data tr.dim td { opacity: 0.5; }
 .chart-fx { height: 160px; }
 .sig-panel { margin-top: 12px; }
 .table-wrap.flat { border: 0; border-radius: 0; background: transparent; }
+/* rule lab */
+.lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
+.lab-side { padding: 10px 12px 12px; }
+.lab-side h3 { margin: 0 0 8px; font-size: 15px; }
+.lab-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.cond-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 6px; }
+.cond-list li { display: flex; gap: 6px; align-items: center; }
+.cond-list select { flex: 1 1 auto; min-width: 0; }
+.cond-list input[type="number"] { width: 76px; }
+.lab-risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.lab-risk-grid input { width: 100%; }
+.lab-desc { line-height: 1.6; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: progress; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; }
+.kpi .muted { display: block; }
+.kpi b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.kpi .ref { display: block; color: var(--muted); font-size: 12px; }
+table.data tr.clickable { cursor: pointer; }
 textarea.digest { width: 100%; font: inherit; font-size: 13px; color: var(--ink); background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-top: 8px; }
 .trades summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 

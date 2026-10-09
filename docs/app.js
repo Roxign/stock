@@ -1,4 +1,5 @@
 import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=6";
+import { loadCatalog, catalog, ruleTarget, describe as ruleDescribe, encodeRule, decodeRule, powerLanguage, scanRule, quality as ruleQuality } from "./rules.js?v=1";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
@@ -17,7 +18,7 @@ let S;
 const stockCache = new Map();
 const state = { tab: "signals", period: "oos", universe: "stocks", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false },
   sigUniverse: "all", sigView: "all", sigNear: 0.03, sigQPeriod: "oos" };
-const TABS = ["signals", "overview", "stock", "strategies"];
+const TABS = ["signals", "overview", "stock", "lab", "strategies"];
 const shown = new Set(["buy_hold", "dca"]);
 const shownMa = new Set(MAS.map(([n]) => n));
 try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
@@ -29,13 +30,13 @@ const pct = (x, d = 1) => (isNum(x) ? (x * 100).toFixed(d) + "%" : "—");
 const spct = (x, d = 1) => (isNum(x) ? (x > 0 ? "+" : "") + (x * 100).toFixed(d) + "%" : "—");
 const num = (x, d = 2) => (isNum(x) ? x.toFixed(d) : "—");
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const strat = (id) => S.strategies.find((s) => s.id === id) || cvStrat(id);
+const strat = (id) => (id === "lab" ? labStrategy() : S.strategies.find((s) => s.id === id) || cvStrat(id));
 const baseId = (id) => id.replace(/~cv$/, "");
 const isFold = (p) => S.folds.some((f) => f.id === p);
 const KIND_UNIVERSE = { etf: "etfs", extra: "extra", stock: "stocks" };
 const universeOf = (code) => KIND_UNIVERSE[S.stocks.find((x) => x.code === code)?.kind] || "stocks";
 const inUniverse = (s, u) => isBaseline(s) || (u === "extra" ? !!s.extra : (s.universe || "stocks") === u || s.universe === "all");
-const appliesTo = (s, st) => isBaseline(s) || !!st.pos?.[s.id];
+const appliesTo = (s, st) => isBaseline(s) || s.lab || !!st.pos?.[s.id];
 
 function cvStrat(id) {
   if (!id?.endsWith("~cv")) return undefined;
@@ -54,6 +55,7 @@ function assignStyles() {
   for (const s of S.strategies) {
     if (s.id === "buy_hold") Object.assign(s, { colorVar: "--ink", style: "solid" });
     else if (s.id === "dca") Object.assign(s, { colorVar: "--muted", style: "dash" });
+    else if (s.family === "規則實驗室") Object.assign(s, { colorVar: "--lab", style: LINE_STYLES[((perFamily[s.family] = (perFamily[s.family] ?? -1) + 1) + 1) % LINE_STYLES.length] });
     else {
       if (!(s.family in FAMILY_SLOT)) FAMILY_SLOT[s.family] = Math.min(nextSlot++, 5);
       const k = (perFamily[s.family] = (perFamily[s.family] ?? -1) + 1);
@@ -76,12 +78,17 @@ function readHash() {
   if (p.get("m")) state.metric = p.get("m");
   if (p.get("from")) state.from = p.get("from");
   if (p.get("to")) state.to = p.get("to");
+  if (p.get("r")) {
+    const r = decodeRule(p.get("r"));
+    if (r?.buy) { labState.rule = r; labTargets.clear(); saveLab(); }
+  }
 }
 
 function writeHash() {
   const p = new URLSearchParams();
   let path = state.tab;
   if (state.tab === "overview") { p.set("p", ovPeriod()); p.set("m", state.metric); }
+  if (state.tab === "lab") p.set("r", encodeRule(labState.rule));
   if (state.tab === "stock") {
     path += "/" + state.code;
     p.set("p", state.period);
@@ -100,6 +107,7 @@ function render() {
     else a.removeAttribute("aria-current");
   });
   if (state.tab === "signals") renderSignals();
+  else if (state.tab === "lab") renderLab();
   else if (state.tab === "overview") renderOverview();
   else if (state.tab === "stock") renderStock();
   else renderStrategies();
@@ -490,15 +498,292 @@ async function renderStockSignals(st) {
   const sigs = Object.values(ss.sig), nLong = sigs.filter((e) => e.to > 1e-6).length, nShort = sigs.filter((e) => e.to < -1e-6).length;
   $("stSigAsof").innerHTML = `${G.asof} 收盤 ${fmtPx(ss.close)} <span class="${ss.chg >= 0 ? "pos" : "neg"}">${spct(ss.chg, 2)}</span>・明日開盤執行${ss.note_text ? `・下一交易日${esc(ss.note_text)}` : ""}
     ・策略共識（明日開盤後）：<span class="pos">多 ${nLong}</span>・空手 ${sigs.length - nLong - nShort}${nShort ? `・<span class="neg">空 ${nShort}</span>` : ""}`;
-  const rows = S.strategies.filter((s) => ss.sig[s.id]).map((s) => {
-    const e = ss.sig[s.id];
-    const trig = (e.trig || []).map(trigText).join("<br>") || (G.strategies[s.id]?.triggers ? `<span class="muted">±10% 內無</span>` : `<span class="muted">模型／跨股票決定，無法事先算出</span>`);
+  const list = S.strategies.filter((s) => ss.sig[s.id]).map((s) => [s, ss.sig[s.id]]);
+  if (labOn()) list.unshift([labStrategy(), labSignal(st)]);
+  const rows = list.map(([s, e]) => {
+    const trig = (e.trig || []).map(trigText).join("<br>") || (s.lab || G.strategies[s.id]?.triggers ? `<span class="muted">±10% 內無</span>` : `<span class="muted">模型／跨股票決定，無法事先算出</span>`);
     return `<tr class="${s.id === state.focus ? "focus" : ""}"><td><span class="name-cell">${swatch(s)}<button type="button" class="link-btn" data-focus="${s.id}">${esc(s.label)}</button></span></td>
       <td>${actChip(e.a, e.side)}${e.stale ? `<br><span class="warn">部位停在 ${e.stale}</span>` : ""}${e.warn ? `<br><span class="warn">${esc(e.warn)}</span>` : ""}</td><td>${posText(e.held)} → <b>${posText(e.to)}</b></td>
-      <td class="wrap">${sinceText(e.since)}</td><td class="wrap">${trig}</td><td>${qualityCell(s.id, ss.kind, 1)}</td><td>${qualityCell(s.id, ss.kind, -1)}</td></tr>`;
+      <td class="wrap">${sinceText(e.since)}</td><td class="wrap">${trig}</td><td>${s.lab ? "—" : qualityCell(s.id, ss.kind, 1)}</td><td>${s.lab ? "—" : qualityCell(s.id, ss.kind, -1)}</td></tr>`;
   }).join("");
   $("stSigTable").innerHTML = `<thead><tr><th>策略</th><th>明日開盤</th><th>部位</th><th>目前部位</th><th>明日收盤觸發價（後天開盤執行）</th><th>買訊品質</th><th>賣訊品質</th></tr></thead><tbody>${rows}</tbody>`;
   $("stSigTable").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => setFocus(b.dataset.focus)));
+}
+
+// ---------- rule lab ----------
+const LAB_ID = "lab";
+const LAB_PRESETS = [
+  { name: "你的規則：KDJ 與 MACD 零軸下同步翻揚（10% 停損）", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "osc_up" }, { id: "zone_neg" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "k_down" }, { id: "osc_down" }, { id: "zone_pos" }] }, stop: 10 },
+  { name: "同步翻揚買、MACD 死叉才賣（10% 停損）", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "osc_up" }, { id: "zone_neg" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "k_down" }, { id: "macd_dead" }, { id: "zone_pos" }] }, stop: 10 },
+  { name: "KDJ 口訣＋MACD 柱確認", buy: { mode: "all", within: 1, conds: [{ id: "j_below", v: 0 }, { id: "osc_rising" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "j_above", v: 100 }, { id: "osc_falling" }] } },
+  { name: "KD 黃金交叉買、死亡交叉賣", buy: { mode: "all", within: 1, conds: [{ id: "kd_golden" }] }, sell: { mode: "all", within: 1, conds: [{ id: "kd_dead" }] } },
+  { name: "MACD 黃金交叉買、死亡交叉賣", buy: { mode: "all", within: 1, conds: [{ id: "macd_golden" }] }, sell: { mode: "all", within: 1, conds: [{ id: "macd_dead" }] } },
+  { name: "規則搜尋第一名（6,930 條中樣本內最佳）", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "zone_neg" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "j_above", v: 100 }, { id: "osc_down" }] } },
+  { name: "KD 低檔黃金交叉＋MACD 翻揚＋季線上揚（12% 移動停損）", buy: { mode: "all", within: 3, conds: [{ id: "kd_golden" }, { id: "k_below", v: 30 }, { id: "osc_up" }, { id: "ma_rising", n: 60 }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "kd_dead" }, { id: "k_above", v: 70 }] }, trail: 12 },
+];
+const clone = (x) => JSON.parse(JSON.stringify(x));
+const ruleKey = (r) => JSON.stringify({ ...r, name: undefined });
+const labState = { rule: null, universe: "stocks", period: "oos", sort: { key: "cagr", asc: false }, result: null, used: false, timer: null, running: false };
+try {
+  const saved = JSON.parse(localStorage.getItem("labRule"));
+  if (saved?.buy) labState.rule = saved;
+  labState.used = localStorage.getItem("labUsed") === "1";
+  labState.chosen = localStorage.getItem("labUsed") !== null;  // the viewer has set the checkbox (or run the lab) before
+} catch {}
+labState.rule ??= clone(LAB_PRESETS[0]);
+const labTargets = new Map();
+const labStrategy = () => ({ id: LAB_ID, label: `實驗：${labState.rule.name || "自訂規則"}`, family: "規則實驗室", universe: "all", colorVar: "--lab", style: "solid", lab: true });
+const labOn = () => labState.used || state.focus === LAB_ID;
+const viewStrategies = () => (labOn() ? [...S.strategies.filter(isBaseline), labStrategy(), ...S.strategies.filter((s) => !isBaseline(s))] : S.strategies);
+
+function labTarget(st) {
+  const key = `${st.code}|${ruleKey(labState.rule)}`;
+  if (!labTargets.has(key)) {
+    if (labTargets.size > 400) labTargets.clear();
+    labTargets.set(key, ruleTarget(st, labState.rule));
+  }
+  return labTargets.get(key);
+}
+
+function saveLab() {
+  try { localStorage.setItem("labRule", JSON.stringify(labState.rule)); localStorage.setItem("labUsed", labState.used ? "1" : "0"); } catch {}
+}
+
+function condOptions(selected) {
+  const cat = catalog();
+  return cat.groups.map((g) => `<optgroup label="${esc(g)}">${cat.list.filter((c) => c.group === g).map((c) =>
+    `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.label.replace(/\{v\}/g, "數值").replace(/\{n\}/g, "N"))}</option>`).join("")}</optgroup>`).join("");
+}
+
+function renderLabSide(which) {
+  const box = $(which === "buy" ? "labBuy" : "labSell"), side = (labState.rule[which] ??= { mode: "all", within: 1, conds: [] });
+  side.conds ??= [];
+  const cat = catalog();
+  const rows = side.conds.map((c, i) => {
+    const spec = cat.byId[c.id], params = Object.entries(spec?.params || {});
+    return `<li><select data-i="${i}" data-f="id" aria-label="條件">${condOptions(c.id)}</select>${params.map(([p, ps]) =>
+      `<input type="number" data-i="${i}" data-f="${p}" value="${c[p] ?? ps.default}" min="${ps.min}" max="${ps.max}" step="1" aria-label="${p === "n" ? "天數" : "數值"}" title="${p === "n" ? "均線天數" : "門檻值"}">`).join("")}<button type="button" class="icon-btn" data-del="${i}" aria-label="刪除條件">✕</button></li>`;
+  }).join("");
+  box.innerHTML = `<h3>${which === "buy" ? "買進條件" : "賣出條件"}</h3>
+    <div class="lab-row"><div class="seg" data-mode role="group" aria-label="條件組合"></div>
+    ${(side.mode || "all") === "all" ? `<label class="field">時間窗<select data-within>${[1, 2, 3, 5, 10].map((w) => `<option value="${w}" ${w === (side.within || 1) ? "selected" : ""}>${w === 1 ? "同一根K棒" : `${w} 根K棒內`}</option>`).join("")}</select></label>` : ""}</div>
+    <ol class="cond-list">${rows || `<li class="muted">${which === "sell" ? "沒有賣出條件：只靠右邊的停損、停利出場" : "沒有買進條件：不會進場"}</li>`}</ol>
+    <button type="button" class="btn" data-add>＋ 新增條件</button>`;
+  seg(box.querySelector("[data-mode]"), [["all", "全部符合"], ["any", "任一符合"]], side.mode || "all", (v) => { side.mode = v; renderLabSide(which); labChanged(); });
+  box.querySelector("[data-within]")?.addEventListener("change", (e) => { side.within = +e.target.value; labChanged(); });
+  box.querySelector("[data-add]").onclick = () => { side.conds.push({ id: which === "buy" ? "k_up" : "k_down" }); renderLabSide(which); labChanged(); };
+  box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { side.conds.splice(+b.dataset.del, 1); renderLabSide(which); labChanged(); }));
+  box.querySelectorAll("[data-f]").forEach((el) => (el.onchange = () => {
+    const c = side.conds[+el.dataset.i], f = el.dataset.f;
+    if (f === "id") {
+      side.conds[+el.dataset.i] = { id: el.value };
+      renderLabSide(which);
+    } else {
+      const ps = cat.byId[c.id].params[f];
+      c[f] = Math.min(ps.max, Math.max(ps.min, Number(el.value) || ps.default));
+      el.value = c[f];
+    }
+    labChanged();
+  }));
+}
+
+function renderLabRisk() {
+  const r = labState.rule, mp = r.macd || [12, 26, 9];
+  const num = (key, label, hint, max) => `<label class="field">${label}<input type="number" data-r="${key}" value="${r[key] || 0}" min="0" max="${max}" step="1" title="${hint}"></label>`;
+  $("labRisk").innerHTML = `<h3>出場保護與參數</h3>
+    <div class="lab-risk-grid">
+      ${num("stop", "收盤停損 %", "收盤跌破進場價這個百分比就賣出；0 = 不用", 50)}
+      ${num("take", "收盤停利 %", "收盤漲超過進場價這個百分比就賣出；0 = 不用", 500)}
+      ${num("trail", "移動停損 %", "收盤從持有期間最高收盤回落這個百分比就賣出；0 = 不用", 50)}
+      ${num("hold", "最長持有天數", "持有滿這麼多個交易日就賣出；0 = 不限", 1000)}
+      <label class="field">KDJ 天數<input type="number" data-p="kdj_n" value="${r.kdj_n || 9}" min="2" max="60" step="1"></label>
+      <label class="field">MACD 快／慢／訊號<span class="field-row"><input type="number" data-m="0" value="${mp[0]}" min="2" max="100"><input type="number" data-m="1" value="${mp[1]}" min="3" max="200"><input type="number" data-m="2" value="${mp[2]}" min="2" max="100"></span></label>
+    </div>`;
+  $("labRisk").querySelectorAll("[data-r]").forEach((el) => (el.onchange = () => { r[el.dataset.r] = Math.max(0, Number(el.value) || 0); el.value = r[el.dataset.r]; labChanged(); }));
+  $("labRisk").querySelector("[data-p]").onchange = (e) => { r.kdj_n = Math.max(2, Math.round(Number(e.target.value) || 9)); e.target.value = r.kdj_n; labChanged(); };
+  $("labRisk").querySelectorAll("[data-m]").forEach((el) => (el.onchange = () => {
+    const m = (r.macd ||= [12, 26, 9]).slice();
+    m[+el.dataset.m] = Math.max(2, Math.round(Number(el.value) || m[+el.dataset.m]));
+    r.macd = m;
+    labChanged();
+  }));
+}
+
+function renderLabMeta() {
+  const r = labState.rule;
+  $("labName").value = r.name || "";
+  $("labDesc").textContent = ruleDescribe(r);
+  $("labPl").textContent = powerLanguage(r);
+  $("labJson").value = JSON.stringify({ id: "my_rule", name: r.name || "自訂規則", rule: { ...r, name: undefined } }, null, 1);
+  const link = `${location.origin}${location.pathname}#/lab?r=${encodeRule(r)}`;
+  $("labLink").href = link;
+  $("labLink").textContent = link.length > 80 ? link.slice(0, 77) + "…" : link;
+}
+
+function labChanged() {
+  labTargets.clear();
+  saveLab();
+  renderLabMeta();
+  if (state.tab === "lab") history.replaceState(null, "", `#/lab?r=${encodeRule(labState.rule)}`);
+  clearTimeout(labState.timer);
+  if (labState.result) labState.timer = setTimeout(runLab, 350);
+}
+
+let labReady = false;
+async function renderLab() {
+  await loadCatalog();
+  if (state.tab !== "lab") return;
+  if (!labReady) {
+    $("labPreset").innerHTML = `<option value="">— 選一個範本 —</option>` + LAB_PRESETS.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join("");
+    $("labPreset").onchange = (e) => {
+      if (e.target.value === "") return;
+      labState.rule = clone(LAB_PRESETS[+e.target.value]);
+      renderLabSide("buy"); renderLabSide("sell"); renderLabRisk();
+      labChanged();
+      e.target.value = "";
+    };
+    $("labName").oninput = (e) => { labState.rule.name = e.target.value; saveLab(); renderLabMeta(); };
+    $("labRun").onclick = runLab;
+    $("labShow").onchange = (e) => { labState.used = e.target.checked; labState.chosen = true; saveLab(); };
+    $("labCopyPl").onclick = async (e) => {
+      try { await navigator.clipboard.writeText($("labPl").textContent); e.target.textContent = "已複製"; } catch { e.target.textContent = "請手動選取複製"; }
+    };
+    labReady = true;
+  }
+  renderLabSide("buy"); renderLabSide("sell"); renderLabRisk(); renderLabMeta();
+  $("labShow").checked = labState.used;
+  const unis = [...Object.entries(S.universes).map(([u, v]) => [u, v.label.replace(/（.*/, "")]), ["all", "全部"]];
+  seg($("labUniverse"), unis, labState.universe, (v) => { labState.universe = v; renderLab(); if (labState.result) runLab(); });
+  seg($("labPeriod"), ["full", "is", "oos"].map((k) => [k, PERIOD_SHORT[k]]), labState.period, (v) => { labState.period = v; renderLab(); if (labState.result) runLab(); });
+  if (labState.result) renderLabResult();
+}
+
+const labAction = (a, b) => (a === b ? (b > 0 ? ["續抱", 0] : ["空手", 0]) : b > a ? ["買進", 1] : ["賣出", -1]);
+
+async function runLab() {
+  if (labState.running) { labState.again = true; return; }
+  labState.running = true;
+  $("labRun").disabled = true;
+  try {
+    const u = labState.universe, pkey = labState.period, per = S.periods[pkey];
+    const codes = S.stocks.filter((s) => u === "all" || universeOf(s.code) === u).map((s) => s.code);
+    let done = 0;
+    const queue = codes.filter((c) => !stockCache.has(c));
+    const total = queue.length;
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (queue.length) {
+        const c = queue.shift();
+        await loadStock(c);
+        $("labStatus").textContent = `載入股價 ${++done}/${total}…`;
+      }
+    }));
+    $("labStatus").textContent = "計算中…";
+    await new Promise((r) => setTimeout(r, 0));
+    const rows = [], folds = {};
+    for (const code of codes) {
+      const st = await loadStock(code), tgt = labTarget(st), n = st.d.length;
+      const b = periodBounds(st.d, per.start, per.end);
+      const a = labAction(tgt[n - 2], tgt[n - 1]);
+      if (!b) continue;
+      const r = simulate(st, tgt, b[0], b[1]);
+      const m = metrics(r.eq, st.d, b[0], b[1], r.invested, r.trades, r.fills.length);
+      const q = ruleQuality(st, tgt, b[0], b[1]);
+      rows.push({ code, name: st.name, kind: st.kind, m, bh: S.metrics.buy_hold[pkey]?.[code], q, act: a, trades: r.trades });
+      for (const f of S.folds) {
+        const fp = S.periods[f.id], fb = periodBounds(st.d, fp.start, fp.end), bh = S.metrics.buy_hold[f.id]?.[code];
+        if (!fb || !bh) continue;
+        const fr = simulate(st, tgt, fb[0], fb[1]);
+        (folds[f.id] ??= []).push([metrics(fr.eq, st.d, fb[0], fb[1]).sharpe, bh.sharpe]);
+      }
+    }
+    labState.result = { rows, folds, universe: u, period: pkey };
+    if (!labState.chosen) { labState.used = labState.chosen = true; $("labShow").checked = true; }
+    saveLab();
+    $("labStatus").textContent = `${rows.length} 檔・${PERIOD_TITLE[pkey]}`;
+    renderLabResult();
+  } finally {
+    labState.running = false;
+    $("labRun").disabled = false;
+    if (labState.again) { labState.again = false; runLab(); }
+  }
+}
+
+const median = (v) => { const x = v.filter(isNum).sort((a, b) => a - b); return x.length ? (x.length % 2 ? x[(x.length - 1) / 2] : (x[x.length / 2 - 1] + x[x.length / 2]) / 2) : NaN; };
+const mean = (v) => (v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN);
+
+function renderLabResult() {
+  const R = labState.result;
+  $("labResult").hidden = !R;
+  if (!R) return;
+  const rows = R.rows.filter((r) => r.bh);
+  const med = (f) => median(rows.map(f));
+  const beat = (f) => mean(rows.map((r) => (f(r) ? 1 : 0)));
+  const trades = rows.flatMap((r) => r.trades);
+  const buys = rows.flatMap((r) => r.q.buys), sells = rows.flatMap((r) => r.q.sells);
+  const acts = { 1: rows.filter((r) => r.act[1] > 0).length, "-1": rows.filter((r) => r.act[1] < 0).length, hold: rows.filter((r) => r.act[0] === "續抱").length };
+  const kpi = (label, v, ref, cls = "") => `<div class="kpi"><span class="muted">${label}</span><b class="${cls}">${v}</b>${ref ? `<span class="ref">${ref}</span>` : ""}</div>`;
+  const sign = (x) => (isNum(x) ? (x >= 0 ? "pos" : "neg") : "");
+  $("labKpis").innerHTML = [
+    kpi("年化報酬（中位數）", pct(med((r) => r.m.cagr)), `買進持有 ${pct(med((r) => r.bh.cagr))}`, sign(med((r) => r.m.cagr))),
+    kpi("Sharpe（中位數）", num(med((r) => r.m.sharpe)), `買進持有 ${num(med((r) => r.bh.sharpe))}`),
+    kpi("最大回撤（中位數）", pct(med((r) => r.m.mdd)), `買進持有 ${pct(med((r) => r.bh.mdd))}`),
+    kpi("勝過買進持有", `${pct(beat((r) => r.m.cagr > r.bh.cagr), 0)}`, `Sharpe 勝過 ${pct(beat((r) => r.m.sharpe > r.bh.sharpe), 0)} 的股票`),
+    kpi("平均持股比例", pct(med((r) => r.m.exposure), 0), `每檔交易 ${num(med((r) => r.m.trades), 0)} 次（中位數）`),
+    kpi("交易勝率", pct(mean(trades.map((t) => (t.ret > 0 ? 1 : 0))), 0), `平均每筆 ${spct(mean(trades.map((t) => t.ret)))}（含成本）`),
+    kpi("買點後 20 日超額漲跌", spct(mean(buys), 2), `${buys.length} 個買點；越高越好`, sign(mean(buys))),
+    kpi("賣點後 20 日超額漲跌", spct(mean(sells), 2), `${sells.length} 個賣點；越低越好`, sign(mean(sells))),
+    kpi("明日開盤", `${actChip("買進", 1)} ${acts[1]}　${actChip("賣出", -1)} ${acts["-1"]}`, `持有中 ${acts.hold} 檔`),
+  ].join("");
+
+  const fids = S.folds.map((f) => f.id);
+  const fmed = (f, k) => median((R.folds[f] || []).map((x) => x[k]));
+  const won = fids.filter((f) => fmed(f, 0) > fmed(f, 1)).length;
+  $("labFolds").innerHTML = `<thead><tr><th></th>${S.folds.map((f) => `<th>${esc(f.label)}</th>`).join("")}<th>Sharpe 勝過折數</th></tr></thead><tbody>
+    <tr><td>${swatch(labStrategy())} 本規則</td>${fids.map((f) => { const v = fmed(f, 0), b = fmed(f, 1); return `<td class="${isNum(v) && isNum(b) ? (v > b ? "pos" : "neg") : ""}">${num(v)}</td>`; }).join("")}<td><b>${won}/${fids.length}</b></td></tr>
+    <tr class="baseline"><td>${swatch(strat("buy_hold"))} 買進持有</td>${fids.map((f) => `<td>${num(fmed(f, 1))}</td>`).join("")}<td>—</td></tr></tbody>`;
+
+  const cols = [["code", "股票"], ["cagr", "年化報酬"], ["bh_cagr", "買進持有"], ["mdd", "最大回撤"], ["sharpe", "Sharpe"], ["bh_sharpe", "買進持有<br>Sharpe"],
+    ["trades", "交易數"], ["win", "勝率"], ["exposure", "持股比例"], ["act", "明日開盤"]];
+  const val = { code: (r) => r.code, cagr: (r) => r.m.cagr, bh_cagr: (r) => r.bh.cagr, mdd: (r) => r.m.mdd, sharpe: (r) => r.m.sharpe, bh_sharpe: (r) => r.bh.sharpe,
+    trades: (r) => r.m.trades, win: (r) => r.m.win, exposure: (r) => r.m.exposure, act: (r) => r.act[1] * 10 + (r.act[0] === "續抱" ? 1 : 0) };
+  const { key, asc } = labState.sort;
+  const sorted = rows.slice().sort((a, b) => {
+    const x = val[key](a), y = val[key](b);
+    const c = typeof x === "string" ? x.localeCompare(y) : (isNum(x) ? x : -Infinity) - (isNum(y) ? y : -Infinity);
+    return asc ? c : -c;
+  });
+  $("labTable").innerHTML = `<thead><tr>${cols.map(([k, t]) => `<th data-sort="${k}" class="${k === key ? "sorted" + (asc ? " asc" : "") : ""}">${t}</th>`).join("")}</tr></thead><tbody>${sorted.map((r) => `
+    <tr class="clickable" data-code="${r.code}"><td>${r.code} ${esc(r.name)}${r.kind === "extra" ? ' <span class="family">代表股</span>' : ""}</td>
+    <td class="${r.m.cagr > r.bh.cagr ? "pos" : "neg"}">${pct(r.m.cagr)}</td><td>${pct(r.bh.cagr)}</td><td>${pct(r.m.mdd)}</td>
+    <td class="${r.m.sharpe > r.bh.sharpe ? "pos" : "neg"}">${num(r.m.sharpe)}</td><td>${num(r.bh.sharpe)}</td><td>${r.m.trades}</td><td>${pct(r.m.win, 0)}</td><td>${pct(r.m.exposure, 0)}</td>
+    <td>${actChip(r.act[0], r.act[1])}</td></tr>`).join("")}</tbody>`;
+  $("labTable").querySelectorAll("th[data-sort]").forEach((th) => (th.onclick = () => {
+    labState.sort = { key: th.dataset.sort, asc: labState.sort.key === th.dataset.sort ? !labState.sort.asc : th.dataset.sort === "code" };
+    renderLabResult();
+  }));
+  $("labTable").onclick = (e) => {
+    const tr = e.target.closest("tr[data-code]");
+    if (tr) location.hash = `#/stock/${tr.dataset.code}?s=${LAB_ID}&p=${R.period}`;
+  };
+}
+
+// The lab rule on one stock: today's order, the current position's start and next-session triggers.
+function labSignal(st) {
+  const tgt = labTarget(st), n = st.d.length;
+  const [a, side] = labAction(tgt[n - 2], tgt[n - 1]);
+  const { trig } = scanRule(st, labState.rule, st.kind === "etf");
+  let since = null;
+  if (tgt[n - 2] > 0) {
+    let i = n - 1;
+    while (i > 1 && tgt[i - 2] > 0) i--;
+    since = { date: st.d[i], px: st.o[i], days: n - i, ret: st.c[n - 1] / st.o[i] - 1, level: 1 };
+  }
+  return { a, side, held: tgt[n - 2], to: tgt[n - 1], since, trig };
 }
 
 // ---------- stock view ----------
@@ -548,16 +833,17 @@ function fillLabel(from, to) {
 
 function focusOptions(st) {
   const groups = {};
-  for (const s of S.strategies) if (appliesTo(s, st)) (groups[s.family] ??= []).push(s);
+  for (const s of viewStrategies()) if (appliesTo(s, st)) (groups[s.family] ??= []).push(s);
   $("focusSel").innerHTML = Object.entries(groups).map(([f, list]) => `<optgroup label="${esc(f)}">${list.map((s) => `<option value="${s.id}">${esc(s.label)}</option>`).join("")}</optgroup>`).join("");
 }
 
 function runAll(st, i0, i1) {
   const out = {};
-  for (const s of S.strategies) {
+  for (const s of viewStrategies()) {
     if (!appliesTo(s, st)) continue;
     let r;
     if (s.id === "buy_hold") r = simulate(st, new Float64Array(st.d.length).fill(1), i0, i1);
+    else if (s.lab) r = simulate(st, labTarget(st), i0, i1);
     else if (s.id === "dca") r = simulateDca(st, i0, i1);
     else r = simulate(st, expandTarget(st.pos[s.id] || [], st.d.length), i0, i1);
     r.m = metrics(r.eq, st.d, i0, i1, r.invested, r.invested ? r.trades : null, r.invested ? r.fills.length : null);
@@ -585,7 +871,7 @@ async function renderStock() {
   $("customRange").hidden = state.period !== "custom";
   $("stFold").value = isFold(state.period) ? state.period : "";
 
-  const [st] = await Promise.all([loadStock(state.code), loadSignals()]);
+  const [st] = await Promise.all([loadStock(state.code), loadSignals(), loadCatalog()]);
   if (st.code !== state.code || state.tab !== "stock") return;
   if (!appliesTo(strat(state.focus) || {}, st)) {
     state.focus = S.strategies.find((s) => !isBaseline(s) && appliesTo(s, st))?.id || "buy_hold";
@@ -612,7 +898,8 @@ async function renderStock() {
   $("stockRange").textContent = `${st.d[i0]} ～ ${st.d[i1]}，${i1 - i0 + 1} 個交易日`;
   const runs = runAll(st, i0, i1);
   const ss = SG?.stocks?.[st.code];
-  drawCharts(st, i0, i1, runs, ss && ss.date === st.d[st.d.length - 1] ? ss.sig[state.focus] : null);
+  const focusSig = state.focus === LAB_ID ? labSignal(st) : ss && ss.date === st.d[st.d.length - 1] ? ss.sig[state.focus] : null;
+  drawCharts(st, i0, i1, runs, focusSig);
   renderStockTable(runs);
   renderTrades(st, runs[state.focus]);
 }
@@ -703,7 +990,7 @@ function drawCharts(st, i0, i1, runs, sig) {
   const eqC = LWC.createChart($("chEq"), chartOptions(true));
   eqC.priceScale("right").applyOptions({ mode: state.log ? LWC.PriceScaleMode.Logarithmic : LWC.PriceScaleMode.Normal });
   const eqSeries = [];
-  for (const s of S.strategies) {
+  for (const s of viewStrategies()) {
     if (!shown.has(s.id) || !runs[s.id]) continue;
     const ser = eqC.addLineSeries({
       color: cssVar(s.colorVar), lineWidth: s.id === state.focus ? 3 : 2, lineStyle: LS[s.style], priceLineVisible: false, lastValueVisible: true,
@@ -756,7 +1043,7 @@ function drawCharts(st, i0, i1, runs, sig) {
 
 function renderStockTable(runs) {
   const cols = ["報酬率", "年化報酬", "最大回撤", "Sharpe", "平均持股", "調整次數", "完整交易", "勝率", "平均每筆", "平均持有"];
-  const rows = S.strategies.filter((s) => runs[s.id]).map((s) => {
+  const rows = viewStrategies().filter((s) => runs[s.id]).map((s) => {
     const m = runs[s.id].m, base = isBaseline(s);
     const cagr = s.id === "dca" && isNum(m.xirr) ? `${pct(m.cagr)}<br><span class="muted">XIRR ${pct(m.xirr)}</span>` : pct(m.cagr);
     return `<tr class="${base ? "baseline" : ""} ${s.id === state.focus ? "focus" : ""}">
@@ -801,6 +1088,7 @@ function renderStrategies() {
           <a class="btn" href="#/stock/${state.code}?s=${s.id}&p=oos">在個股回測中查看</a>
           ${s.multicharts ? `<button class="btn" type="button" data-code="${s.multicharts}" data-sid="${s.id}">MultiCharts 程式碼</button>` : ""}
           ${s.research ? `<button class="btn" type="button" data-doc="${s.research}" data-title="${esc(fam)} 研究筆記">研究筆記</button>` : ""}
+          ${s.lab_link ? `<a class="btn" href="${s.lab_link}">在規則實驗室開啟</a>` : ""}
         </div>
         <div class="code-box" hidden></div>
       </article>`).join("")}</section>`).join("");

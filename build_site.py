@@ -6,6 +6,7 @@
 """
 
 import argparse
+import base64
 import json
 import math
 import shutil
@@ -192,6 +193,9 @@ def main():
         m["universe"] = u
         m["portfolio_weights"] = bool(s.get("weights"))
         m["extra"] = runs_on_extra(s, data) and pos_path(s["id"], "extra").exists()
+        if s.get("lab_rule"):  # opens in the rule lab (docs/rules.js decodes the same base64url JSON)
+            raw = json.dumps(s["lab_rule"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            m["lab_link"] = "#/lab?r=" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
         key = "etfs" if u == "etfs" else "stocks"
         m["description"] = latest_block(s["id"], board[board["universe"] == key], cv_tables[key]["rows"], cv_meta,
                                         board[board["universe"] == "extra"] if m["extra"] else None, data_end) + s["description"]

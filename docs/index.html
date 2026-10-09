@@ -6,10 +6,10 @@
   <title>台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=7"></script>
+  <script type="module" src="app.js?v=8"></script>
 </head>
 <body>
   <header class="top">
@@ -21,6 +21,7 @@
       <a href="#/signals" data-tab="signals">今日訊號</a>
       <a href="#/overview" data-tab="overview">總覽</a>
       <a href="#/stock" data-tab="stock">個股回測</a>
+      <a href="#/lab" data-tab="lab">規則實驗室</a>
       <a href="#/strategies" data-tab="strategies">策略說明</a>
     </nav>
     <button id="themeBtn" class="icon-btn" type="button" aria-label="切換深色／淺色">
@@ -183,6 +184,58 @@
       <details class="trades" id="tradesBox">
         <summary id="tradesSummary">交易明細</summary>
         <div class="table-wrap"><table id="tradesTable" class="data"></table></div>
+      </details>
+    </section>
+
+    <section id="view-lab" hidden>
+      <div class="stock-head">
+        <h2>規則實驗室：自己組合 KDJ／MACD 買賣規則</h2>
+      </div>
+      <p class="note">選好買進與賣出條件後按「執行回測」，會在所選標的的每一檔股票上回測（全部在瀏覽器裡計算），並和買進持有比較。成交方式和網站其他策略相同：收盤判斷、下一個交易日開盤成交、只做多，含手續費與證交稅。條件改動後會自動重算。</p>
+      <div class="filters">
+        <label class="field">從範本開始
+          <select id="labPreset"></select>
+        </label>
+        <label class="field grow">規則名稱
+          <input id="labName" autocomplete="off" maxlength="40">
+        </label>
+      </div>
+
+      <div class="lab-grid">
+        <section class="panel lab-side" id="labBuy"></section>
+        <section class="panel lab-side" id="labSell"></section>
+        <section class="panel lab-side" id="labRisk"></section>
+      </div>
+      <p class="callout lab-desc" id="labDesc"></p>
+
+      <div class="filters">
+        <div class="seg" id="labUniverse" role="group" aria-label="標的"></div>
+        <div class="seg" id="labPeriod" role="group" aria-label="期間"></div>
+        <button type="button" class="btn primary" id="labRun">執行回測</button>
+        <label class="check"><input type="checkbox" id="labShow"> 在個股頁顯示這個規則</label>
+        <span class="muted" id="labStatus"></span>
+      </div>
+
+      <div id="labResult" hidden>
+        <div class="kpis" id="labKpis"></div>
+        <h2>交叉驗證：8 段市況各自回測</h2>
+        <p class="note">每段約 2 年、本金重新開始；格子是該段所有股票的 Sharpe 中位數，<span class="pos">紅＝勝過同段買進持有</span>。只在某一段特別好的規則，通常換到別段就不靈。</p>
+        <div class="table-wrap"><table id="labFolds" class="data"></table></div>
+        <h2>逐檔結果</h2>
+        <p class="note">點欄位標題排序；點一列可在個股頁看這個規則的 K 線買賣點、今日訊號與明日觸發價。</p>
+        <div class="table-wrap"><table id="labTable" class="data"></table></div>
+      </div>
+
+      <details class="trades">
+        <summary>MultiCharts 程式碼（PowerLanguage）</summary>
+        <div class="actions"><button type="button" class="btn" id="labCopyPl">複製程式碼</button></div>
+        <pre class="code"><code id="labPl"></code></pre>
+      </details>
+      <details class="trades">
+        <summary>分享連結與加入每日訊號</summary>
+        <p class="note">分享連結（含目前的條件）：<a id="labLink" href="#/lab">開啟</a></p>
+        <p class="note">要讓這個規則每天產生買賣訊號與觸發價，把下面的 JSON 告訴我，或加進 <code>strategies/kdj_macd_lab/rules.json</code> 後執行每日更新。</p>
+        <textarea id="labJson" class="digest" rows="8" readonly></textarea>
       </details>
     </section>
 
