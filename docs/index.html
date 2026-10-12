@@ -6,10 +6,10 @@
   <title>KDJ／MACD 低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=10"></script>
 </head>
 <body>
   <header class="top">
@@ -43,13 +43,14 @@
       <div class="filters">
         <div class="seg" id="lowUniverse" role="group" aria-label="標的"></div>
         <div class="seg" id="lowFilter" role="group" aria-label="條件"></div>
+        <div class="seg" id="lowSort" role="group" aria-label="排序"></div>
       </div>
       <p class="note" id="lowCounts"></p>
-      <div class="table-wrap"><table id="lowTable" class="data low"></table></div>
+      <div class="table-wrap fit"><table id="lowTable" class="data low"></table></div>
 
       <h2>低點分數準不準？</h2>
       <p class="note">2010 年以來每一檔、每一天的低點分數，對照之後 20 個交易日（隔天開盤買進）的漲跌，減去同一檔的平常表現＝<strong>超額漲跌</strong>。分數很高（90 以上）的日子之後平均比平常好，中間分數則沒有優勢；這是統計上的傾向，個別股票仍可能續跌。</p>
-      <div class="table-wrap"><table id="lowBands" class="data"></table></div>
+      <div class="table-wrap fit"><table id="lowBands" class="data bands"></table></div>
     </section>
 
     <section id="view-signals" hidden>

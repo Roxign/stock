@@ -331,7 +331,42 @@ const LOW_FILTERS = [
   ["rebound", "同步翻揚買點", (r) => r.flags.includes("rebound")],
 ];
 const LOW_UNIS = [["all", "全部"], ["stock", "50 檔"], ["extra", "代表股"], ["etf", "ETF"]];
-const lowState = { uni: "all", filter: "all", sort: { key: "score", asc: false } };
+const lowState = { uni: "all", filter: "all", sort: "score" };
+
+const LOW_SORTS = [["score", "低點分數"], ["chg", "今日跌幅"], ["days", "低檔天數"], ["code", "代號"]];
+const SP = { w: 240, h: 108, top: 11, priceH: 34, kdY: 62, kdH: 20, mY: 88, mH: 18 };
+
+// Thumbnail of the last sessions: close line with the window's high / low marked, KD with 20 / 80 guides,
+// MACD histogram (red / green) with the DIF line.
+function sparkSvg(r, dates) {
+  const sp = r.spark, c = sp.c, n = c.length, X = (i) => 1 + (i / (n - 1)) * (SP.w - 2);
+  let hi = 0, lo = 0;
+  c.forEach((v, i) => { if (v > c[hi]) hi = i; if (v < c[lo]) lo = i; });
+  const pr = c[hi] - c[lo] || 1, Y = (v) => SP.top + (1 - (v - c[lo]) / pr) * SP.priceH;
+  const pts = (arr, f) => arr.map((v, i) => `${X(i).toFixed(1)},${f(v).toFixed(1)}`).join(" ");
+  const line = pts(c, Y);
+  const area = `1,${SP.top + SP.priceH} ${line} ${X(n - 1).toFixed(1)},${SP.top + SP.priceH}`;
+  const mark = (i, cls, above) => {
+    const x = Math.min(Math.max(X(i), 20), SP.w - 20), y = above ? Y(c[i]) - 3.5 : Y(c[i]) + 10.5;
+    return `<circle class="sp-${cls}" cx="${X(i).toFixed(1)}" cy="${Y(c[i]).toFixed(1)}" r="2.6"/><text class="sp-t sp-${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle">${cls === "hi" ? "高" : "低"} ${fmtPx(c[i])}</text>`;
+  };
+  const KY = (v) => SP.kdY + (1 - Math.max(0, Math.min(100, v)) / 100) * SP.kdH;
+  const m = Math.max(...sp.osc.map(Math.abs), ...sp.dif.map(Math.abs)) || 1;
+  const MY = (v) => SP.mY + SP.mH / 2 - (v / m) * (SP.mH / 2);
+  const bw = Math.max(1, (SP.w - 2) / n - 0.8);
+  const bars = sp.osc.map((v, i) => `<rect class="${v >= 0 ? "sp-up" : "sp-dn"}" x="${(X(i) - bw / 2).toFixed(1)}" y="${Math.min(MY(v), MY(0)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.6, Math.abs(MY(v) - MY(0))).toFixed(1)}"/>`).join("");
+  const ds = sp.dates || dates;
+  const hline = (y, cls) => `<line class="${cls}" x1="0" x2="${SP.w}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/>`;
+  return `<svg class="spark" data-code="${r.code}" width="${SP.w}" height="${SP.h}" viewBox="0 0 ${SP.w} ${SP.h}" role="img" aria-label="${esc(r.name)} ${ds[0]} 至 ${ds[n - 1]} 走勢：最高 ${fmtPx(c[hi])}（${ds[hi]}），最低 ${fmtPx(c[lo])}（${ds[lo]}），收盤 ${fmtPx(c[n - 1])}">`
+    + `<polygon class="sp-area" points="${area}"/><polyline class="sp-line" points="${line}"/>`
+    + mark(hi, "hi", true) + mark(lo, "lo", false)
+    + `<circle class="sp-last" cx="${X(n - 1).toFixed(1)}" cy="${Y(c[n - 1]).toFixed(1)}" r="2.2"/>`
+    + hline(KY(80), "sp-guide") + hline(KY(20), "sp-guide")
+    + `<polyline class="sp-d" points="${pts(sp.d, KY)}"/><polyline class="sp-k" points="${pts(sp.k, KY)}"/><text class="sp-t" x="2" y="${SP.kdY + 7}">KD</text>`
+    + hline(MY(0), "sp-zero") + bars
+    + `<polyline class="sp-k" points="${pts(sp.dif, MY)}"/><text class="sp-t" x="2" y="${SP.mY + 6}">MACD</text>`
+    + `<rect class="sp-hit" x="0" y="0" width="${SP.w}" height="${SP.h}"/></svg>`;
+}
 
 async function renderLow() {
   const L = await loadLow();
@@ -340,61 +375,68 @@ async function renderLow() {
   $("lowAsof").textContent = `${L.asof} 收盤後・更新於 ${L.generated.replace("T", " ")}`;
   seg($("lowUniverse"), LOW_UNIS, lowState.uni, (v) => { lowState.uni = v; renderLow(); });
   seg($("lowFilter"), LOW_FILTERS.map(([k, t]) => [k, t]), lowState.filter, (v) => { lowState.filter = v; renderLow(); });
+  seg($("lowSort"), LOW_SORTS, lowState.sort, (v) => { lowState.sort = v; renderLow(); });
   const inUni = L.rows.filter((r) => lowState.uni === "all" || r.kind === lowState.uni);
   const count = (k) => inUni.filter(LOW_FILTERS.find((f) => f[0] === k)[2]).length;
   $("lowCounts").innerHTML = `今天：KDJ 低檔 <b>${count("kdj")}</b> 檔・MACD 零軸下 <b>${count("macd")}</b> 檔・兩者皆低 <b>${count("both")}</b> 檔・開始反彈 <b>${count("turn")}</b> 檔・符合你的同步翻揚買點 <b>${count("rebound")}</b> 檔（共 ${inUni.length} 檔）`;
 
   const test = LOW_FILTERS.find((f) => f[0] === lowState.filter)[2];
-  const val = { score: (r) => r.score, code: (r) => r.code, chg: (r) => r.chg, k: (r) => r.k, macd_low: (r) => r.macd_low, dif: (r) => r.dif_pct,
-    days: (r) => r.low_days, hist: (r) => (r.hist?.n ? r.hist.mean - r.hist.base : -Infinity) };
-  const { key, asc } = lowState.sort;
-  const rows = inUni.filter(test).sort((a, b) => {
-    const x = val[key](a), y = val[key](b);
-    const c = typeof x === "string" ? x.localeCompare(y) : (isNum(x) ? x : -Infinity) - (isNum(y) ? y : -Infinity);
-    return asc ? c : -c;
-  });
-  const th = (k, t) => (k ? `<th data-sort="${k}" class="${k === key ? "sorted" + (asc ? " asc" : "") : ""}">${t}</th>` : `<th>${t}</th>`);
+  const by = {
+    score: (a, b) => b.score - a.score,
+    chg: (a, b) => a.chg - b.chg,
+    days: (a, b) => b.low_days - a.low_days || b.score - a.score,
+    code: (a, b) => a.code.localeCompare(b.code),
+  }[lowState.sort];
+  const rows = inUni.filter(test).sort(by);
   const histCell = (h) => {
     if (!h) return "—";
     if (!h.n) return `<span class="muted">2010 年後沒出現過</span>`;
-    const ex = h.mean - h.base;
-    return `${h.n} 次，平均 <span class="${h.mean >= 0 ? "pos" : "neg"}">${spct(h.mean)}</span>（平常 ${spct(h.base)}）<br><span class="muted">上漲 ${pct(h.up, 0)}，平常 ${pct(h.base_up, 0)}；${ex >= 0 ? "優於" : "差於"}平常</span>`;
+    return `${h.n} 次，平均 <span class="${h.mean >= 0 ? "pos" : "neg"}">${spct(h.mean)}</span><br><span class="muted">平常 ${spct(h.base)}；上漲 ${pct(h.up, 0)}（平常 ${pct(h.base_up, 0)}）</span>`;
   };
   const ruleCell = (r) => {
     if (!r.rule) return `<span class="muted">—</span>`;
     const b = r.rule.buy;
-    return `${actChip(r.rule.a, r.rule.side)}${b ? `<br><span class="muted">明日收盤 ${trigCond(b)} → 買進（${trigDist(b)}）</span>` : ""}`;
+    return `${actChip(r.rule.a, r.rule.side)}${b ? `<br><span class="muted">明日收盤 ${trigCond(b)} 買進（${trigDist(b)}）</span>` : ""}`;
   };
-  $("lowTable").innerHTML = `<thead><tr>${th(null, "#")}${th("code", "股票")}${th("chg", "收盤（漲跌）")}${th("score", "低點分數")}${th("k", "K／D／J")}${th("dif", "DIF／MACD 線<br>（佔股價）")}${th("macd_low", "MACD<br>低檔程度")}${th(null, "狀態")}${th("days", "兩者皆低<br>連續天數")}${th("hist", "過去 KDJ、MACD 同時在低檔後<br>20 個交易日")}${th(null, "你的規則<br>（同步翻揚）")}</tr></thead><tbody>${rows.map((r, i) => `
-    <tr class="clickable" data-code="${r.code}"><td>${i + 1}</td>
-    <td><a class="link-btn" href="#/stock/${r.code}">${r.code} ${esc(r.name)}</a>${r.kind === "extra" ? ` <span class="family">代表股${r.sector ? "・" + esc(r.sector) : ""}</span>` : r.kind === "etf" ? ' <span class="family">ETF</span>' : ""}</td>
-    <td>${fmtPx(r.close)} <span class="${r.chg > 0 ? "pos" : r.chg < 0 ? "neg" : ""}">${spct(r.chg, 2)}</span></td>
-    <td><span class="score"><b>${num(r.score, 0)}</b><span class="bar" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r.score))}%"></i></span></span></td>
-    <td>${num(r.k, 0)}／${num(r.d, 0)}／${num(r.j, 0)}</td>
-    <td>${num(r.dif_pct)}%／${num(r.macd_pct)}%</td>
-    <td>${num(r.macd_low, 0)}</td>
-    <td class="wrap">${r.flags.map((f) => `<span class="tag ${f === "rebound" ? "hot" : f === "k_up" || f === "osc_up" ? "turn" : ""}">${LOW_TAGS[f]}</span>`).join("") || '<span class="muted">—</span>'}</td>
-    <td>${r.low_days ? r.low_days + " 天" : "—"}</td>
-    <td class="wrap">${histCell(r.hist)}</td>
-    <td class="wrap">${ruleCell(r)}</td></tr>`).join("") || `<tr><td colspan="11">今天沒有符合這個條件的股票。</td></tr>`}</tbody>`;
-  $("lowTable").querySelectorAll("th[data-sort]").forEach((h) => (h.onclick = () => {
-    lowState.sort = { key: h.dataset.sort, asc: lowState.sort.key === h.dataset.sort ? !lowState.sort.asc : h.dataset.sort === "code" };
-    renderLow();
-  }));
-  $("lowTable").onclick = (e) => {
+  const kindText = (r) => (r.kind === "extra" ? `代表股${r.sector ? "・" + esc(r.sector) : ""}` : r.kind === "etf" ? "ETF" : "0050 成分股");
+  const tags = (r) => r.flags.map((f) => `<span class="tag ${f === "rebound" ? "hot" : f === "k_up" || f === "osc_up" ? "turn" : ""}">${LOW_TAGS[f]}</span>`).join("")
+    + (r.low_days ? `<span class="tag">兩者皆低 ${r.low_days} 天</span>` : "");
+  const body = rows.map((r, i) => `<tr class="clickable" data-code="${r.code}">
+    <td class="c-rank">${i + 1}</td>
+    <td class="c-name"><a class="link-btn" href="#/stock/${r.code}"><b>${r.code} ${esc(r.name)}</b></a><br><span class="muted">${kindText(r)}</span><br>
+      ${fmtPx(r.close)} <span class="${r.chg > 0 ? "pos" : r.chg < 0 ? "neg" : ""}">${spct(r.chg, 2)}</span><div class="tags">${tags(r)}</div></td>
+    <td class="c-spark">${sparkSvg(r, L.spark_dates)}</td>
+    <td class="c-score"><span class="score"><b>${num(r.score, 0)}</b><span class="bar" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r.score))}%"></i></span></span>
+      <span class="muted">K ${num(r.k, 0)}・D ${num(r.d, 0)}・J ${num(r.j, 0)}<br>DIF ${num(r.dif_pct)}%・MACD 低檔 ${num(r.macd_low, 0)}</span></td>
+    <td class="c-hist">${histCell(r.hist)}</td>
+    <td class="c-rule">${ruleCell(r)}</td></tr>`).join("");
+  $("lowTable").innerHTML = `<thead><tr><th>#</th><th>股票</th><th>近 ${L.spark || 60} 個交易日<br><span class="muted">收盤（標出高低點）、KD、MACD</span></th><th>低點分數</th><th>過去同樣低點後 20 日</th><th>你的規則</th></tr></thead>`
+    + `<tbody>${body || `<tr><td colspan="6">今天沒有符合這個條件的股票。</td></tr>`}</tbody>`;
+  const t = $("lowTable");
+  t.onclick = (e) => {
     if (e.target.closest("a")) return;
     const tr = e.target.closest("tr[data-code]");
     if (!tr) return;
     const r = L.rows.find((x) => x.code === tr.dataset.code);
     location.hash = `#/stock/${r.code}?${r.rule ? "s=kdj_macd_rebound_turn&" : ""}p=oos`;
   };
+  t.onmousemove = (e) => {
+    const svg = e.target.closest("svg.spark");
+    if (!svg) return hideTip();
+    const r = L.rows.find((x) => x.code === svg.dataset.code), sp = r.spark, n = sp.c.length;
+    const box = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(n - 1, Math.round(((e.clientX - box.left) / box.width) * (n - 1))));
+    showTip(e, `<b>${r.code} ${esc(r.name)}</b>　${(sp.dates || L.spark_dates)[i]}<br>收盤 ${fmtPx(sp.c[i])}<br>K ${sp.k[i]}・D ${sp.d[i]}<br>DIF ${num(sp.dif[i])}%・柱狀體 ${num(sp.osc[i])}%（佔股價）`);
+  };
+  t.onmouseleave = hideTip;
 
   const per = [["is", "樣本內 2010–2020"], ["oos", "樣本外 2021–今"]];
-  const cell = (b) => `<td class="${b.ex >= 0 ? "pos" : "neg"}">${spct(b.ex, 2)}</td><td>${pct(b.up, 0)} <span class="muted">/ ${pct(b.base_up, 0)}</span></td><td class="muted">${b.n.toLocaleString()}</td>`;
-  const bandRows = L.bands.is.map((b, i) => `<tr><td>${b.lo}–${Math.round(b.hi)}${b.lo >= 90 ? "（最低點）" : ""}</td>${per.map(([p]) => cell(L.bands[p][i])).join("")}</tr>`).join("");
-  const epRow = `<tr class="baseline"><td>KDJ 與 MACD 同時進入低檔的第一天</td>${per.map(([p]) => cell(L.episodes[p])).join("")}</tr>`;
-  $("lowBands").innerHTML = `<thead><tr><th rowspan="2">低點分數</th>${per.map(([, t]) => `<th colspan="3">${t}</th>`).join("")}</tr>
-    <tr>${per.map(() => "<th>20 日超額漲跌</th><th>上漲比例 / 平常</th><th>天數</th>").join("")}</tr></thead><tbody>${bandRows}${epRow}</tbody>`;
+  const cell = (b) => `<td class="${b.ex >= 0 ? "pos" : "neg"}" title="${b.n.toLocaleString()} 個交易日">${spct(b.ex, 2)}</td><td>${pct(b.up, 0)}</td>`;
+  const bandRows = L.bands.is.map((b, i) => `<tr><td>${b.lo}–${Math.round(b.hi)}${b.lo >= 90 ? " 最低點" : ""}</td>${per.map(([p]) => cell(L.bands[p][i])).join("")}</tr>`).join("");
+  const epRow = `<tr class="baseline"><td>剛同時進入低檔</td>${per.map(([p]) => cell(L.episodes[p])).join("")}</tr>`;
+  $("lowBands").innerHTML = `<thead><tr><th rowspan="2">低點分數</th>${per.map(([, t]) => `<th colspan="2">${t}</th>`).join("")}</tr>`
+    + `<tr>${per.map(([p]) => `<th>20 日超額</th><th>上漲比例<br><span class="muted">平常 ${pct(L.episodes[p].base_up, 0)}</span></th>`).join("")}</tr></thead>`
+    + `<tbody>${bandRows}${epRow}</tbody>`;
 }
 
 // ---------- signals ----------

@@ -30,6 +30,7 @@ from .data import ROOT
 OUT = ROOT / "docs" / "data" / "low.json"
 RANK_WINDOW = 500
 H = 20
+SPARK = 60  # sessions in each row's thumbnail (about three months)
 BANDS = [0, 30, 50, 70, 80, 90, 100.01]
 PERIODS = {"is": ("2010-01-01", "2020-12-31"), "oos": ("2021-01-01", None)}
 REBOUND_RULE = "kdj_macd_rebound_turn"
@@ -111,6 +112,15 @@ def _rule_today(signals, code):
     return {"a": e["a"], "side": e["side"], "buy": min(buy, key=lambda t: abs(t["d"])) if buy else None}
 
 
+def _spark(df, f) -> dict:
+    """Last SPARK sessions for the row thumbnail: closes, K, D, and MACD (DIF, histogram) as % of the close."""
+    t, g = df.iloc[-SPARK:], f.iloc[-SPARK:]
+    r = lambda v, n: [round(float(x), n) if n else int(round(float(x))) for x in v]
+    return {"d0": t.index[0].strftime("%Y-%m-%d"), "d1": t.index[-1].strftime("%Y-%m-%d"), "dates": [d.strftime("%m/%d") for d in t.index],
+            "c": r(t["close"], 2), "k": r(g["k"], 0), "d": r(g["d"], 0),
+            "dif": r(g["dif"] / t["close"] * 100, 2), "osc": r(g["osc"] / t["close"] * 100, 2)}
+
+
 def _round(x, n=2):
     return None if x is None or (isinstance(x, float) and not math.isfinite(x)) else round(float(x), n)
 
@@ -150,8 +160,14 @@ def build(out=OUT, verbose=True) -> dict:
             "k": _round(last["k"], 1), "d": _round(last["d"], 1), "j": _round(last["j"], 1),
             "dif_pct": _round(last["dif_pct"], 2), "macd_pct": _round(last["macd"] / cl[-1] * 100, 2),
             "flags": _flags(f), "low_days": _low_days(f), "hist": _history(f), "rule": _rule_today(signals, code),
+            "spark": _spark(df, f),
         })
     rows.sort(key=lambda r: -r["score"])
+    # thumbnails share the trading calendar: keep the dates once, per row only where they differ (suspensions)
+    common = max({tuple(r["spark"]["dates"]) for r in rows}, key=lambda t: sum(tuple(r["spark"]["dates"]) == t for r in rows))
+    for r in rows:
+        if tuple(r["spark"]["dates"]) == common:
+            del r["spark"]["dates"]
     bands, episodes = {}, {}
     for p, parts in pooled.items():
         allp = pd.concat(parts, ignore_index=True)
@@ -165,7 +181,7 @@ def build(out=OUT, verbose=True) -> dict:
         episodes[p] = {"n": int(len(ep)), "ex": _round(ep["ex"].mean(), 5), "up": _round(ep["up"].mean(), 4),
                        "base_up": _round(base_up, 4)}
     doc = {"asof": asof.strftime("%Y-%m-%d"), "generated": datetime.now(TPE).isoformat(timespec="minutes"),
-           "horizon": H, "rank_window": RANK_WINDOW, "rows": rows, "bands": bands, "episodes": episodes}
+           "horizon": H, "rank_window": RANK_WINDOW, "spark": SPARK, "spark_dates": list(common), "rows": rows, "bands": bands, "episodes": episodes}
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     if verbose:

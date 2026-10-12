@@ -296,17 +296,62 @@ table.data tr.dim td { opacity: 0.5; }
 .chart-fx { height: 160px; }
 .sig-panel { margin-top: 12px; }
 .table-wrap.flat { border: 0; border-radius: 0; background: transparent; }
-/* low-point ranking */
-table.data.low td { vertical-align: middle; }
-table.data.low td:nth-child(2), table.data.low th:nth-child(2) { text-align: left; }
-table.data.low td.wrap { min-width: 170px; white-space: normal; text-align: left; font-size: 12px; line-height: 1.4; }
-.score { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; }
-.score b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
-.bar { flex: 1; height: 8px; min-width: 60px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+/* low-point ranking: fits the page width (no sideways scrolling); rows become cards on narrow screens */
+.table-wrap.fit { overflow-x: visible; }
+table.data.low td { white-space: normal; vertical-align: middle; text-align: left; }
+table.data.low th { text-align: left; white-space: normal; }
+table.data.low .c-rank { width: 28px; color: var(--muted); }
+table.data.low .c-name { min-width: 150px; }
+table.data.low .c-spark { width: 248px; padding: 4px 6px; }
+table.data.low .c-score { min-width: 140px; font-size: 12px; }
+table.data.low .c-hist, table.data.low .c-rule { font-size: 12px; line-height: 1.45; min-width: 120px; }
+.tags { margin-top: 3px; }
+.score { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.score b { font-size: 16px; min-width: 26px; font-variant-numeric: tabular-nums; }
+.bar { flex: 1; height: 8px; min-width: 50px; max-width: 110px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
 .tag { display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; color: var(--ink-2); background: var(--surface-2); }
 .tag.hot { color: #fff; background: var(--up); font-weight: 600; }
 .tag.turn { color: var(--up); background: color-mix(in oklab, var(--up) 12%, transparent); }
+svg.spark { display: block; overflow: visible; }
+svg.spark .sp-line { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
+svg.spark .sp-area { fill: var(--ink-2); opacity: 0.08; }
+svg.spark .sp-last { fill: var(--ink); }
+svg.spark circle.sp-hi, svg.spark text.sp-hi { fill: var(--up); }
+svg.spark circle.sp-lo, svg.spark text.sp-lo { fill: var(--down); }
+svg.spark .sp-t { font-size: 9.5px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+svg.spark text.sp-hi, svg.spark text.sp-lo { font-weight: 600; }
+svg.spark .sp-guide { stroke: var(--axis); stroke-dasharray: 2 2; stroke-width: 0.8; }
+svg.spark .sp-zero { stroke: var(--axis); stroke-width: 0.8; }
+svg.spark .sp-k { fill: none; stroke: var(--s1); stroke-width: 1.2; }
+svg.spark .sp-d { fill: none; stroke: var(--s2); stroke-width: 1.2; }
+svg.spark .sp-up { fill: var(--up); opacity: 0.75; }
+svg.spark .sp-dn { fill: var(--down); opacity: 0.75; }
+svg.spark .sp-hit { fill: transparent; }
+table.data.bands th, table.data.bands td { white-space: normal; }
+@media (max-width: 900px) {
+  table.data.low thead { display: none; }
+  table.data.low, table.data.low tbody { display: block; }
+  table.data.low tr { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; grid-template-areas: "rank name score" "spark spark spark" "hist hist rule";
+    gap: 6px 10px; padding: 12px 8px; border-bottom: 1px solid var(--grid); }
+  table.data.low td { border: 0; padding: 0; min-width: 0; }
+  table.data.low .c-rank { grid-area: rank; width: auto; }
+  table.data.low .c-name { grid-area: name; min-width: 0; }
+  table.data.low .c-score { grid-area: score; min-width: 0; text-align: right; }
+  table.data.low .c-score .score { justify-content: flex-end; }
+  table.data.low .c-spark { grid-area: spark; width: auto; padding: 0; }
+  table.data.low .c-hist { grid-area: hist; min-width: 0; }
+  table.data.low .c-rule { grid-area: rule; min-width: 0; text-align: right; }
+  svg.spark { width: 100%; height: auto; max-width: 300px; }
+  table.data.low tbody tr:hover { background: transparent; }
+}
+@media (max-width: 480px) {
+  table.data.low tr { grid-template-areas: "rank name name" "rank score score" "spark spark spark" "hist hist hist" "rule rule rule"; }
+  table.data.low .c-score, table.data.low .c-rule { text-align: left; }
+  table.data.low .c-score .score { justify-content: flex-start; }
+  table.data.bands { font-size: 12px; }
+  table.data.bands th, table.data.bands td { padding: 6px 5px; }
+}
 
 /* rule lab */
 .lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
