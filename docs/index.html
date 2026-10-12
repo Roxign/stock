@@ -6,10 +6,10 @@
   <title>KDJ／MACD 高低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=11"></script>
+  <script type="module" src="app.js?v=12"></script>
 </head>
 <body>
   <header class="top">
@@ -23,6 +23,7 @@
       <a href="#/overview" data-tab="overview">總覽</a>
       <a href="#/stock" data-tab="stock">個股回測</a>
       <a href="#/lab" data-tab="lab">規則實驗室</a>
+      <a href="#/label" data-tab="label">盲測標註</a>
       <a href="#/strategies" data-tab="strategies">策略說明</a>
     </nav>
     <button id="themeBtn" class="icon-btn" type="button" aria-label="切換深色／淺色">
@@ -34,25 +35,26 @@
     <p id="loading" class="muted">載入資料中…</p>
 
     <section id="view-low" hidden>
-      <div class="filters slim"><div class="seg" id="lowMode" role="group" aria-label="買點或賣點"></div></div>
-      <div class="stock-head">
-        <h2 id="lowTitle">KDJ／MACD 低點排行榜</h2>
+      <div class="low-top">
+        <div class="seg" id="lowMode" role="group" aria-label="買點或賣點"></div>
         <span class="muted" id="lowAsof"></span>
       </div>
+      <h2 id="lowTitle" class="low-title">KDJ／MACD 低點排行榜</h2>
       <p class="note"><span id="lowNote"></span>
-      <button type="button" class="link-btn doc-link" data-doc="research/low_points.md" data-title="KDJ／MACD 低點與高點排行榜說明">說明與歷史驗證</button>
-      <button type="button" class="link-btn doc-link" data-doc="research/divergence_saturation.md" data-title="指標背離與高低檔鈍化研究">背離與鈍化研究</button></p>
-      <div class="filters">
-        <div class="seg" id="lowUniverse" role="group" aria-label="標的"></div>
-        <div class="seg" id="lowFilter" role="group" aria-label="條件"></div>
-        <div class="seg" id="lowSort" role="group" aria-label="排序"></div>
+        <button type="button" class="link-btn doc-link" data-doc="research/low_points.md" data-title="KDJ／MACD 高低點排行榜說明">說明</button>・<button type="button" class="link-btn doc-link" data-doc="research/divergence_saturation.md" data-title="指標背離與高低檔鈍化研究">背離與鈍化研究</button></p>
+      <div class="filters slim low-filters">
+        <label class="field-row">標的 <select id="lowUniverse"></select></label>
+        <label class="field-row">條件 <select id="lowFilter"></select></label>
+        <label class="field-row">排序 <select id="lowSort"></select></label>
+        <span class="chips" id="lowCounts"></span>
       </div>
-      <p class="note" id="lowCounts"></p>
       <div class="table-wrap fit"><table id="lowTable" class="data low"></table></div>
 
-      <h2 id="lowBandsTitle">低點分數準不準？</h2>
-      <p class="note" id="lowBandsNote"></p>
-      <div class="table-wrap fit"><table id="lowBands" class="data bands"></table></div>
+      <details class="trades">
+        <summary id="lowBandsTitle">分數準不準？</summary>
+        <p class="note" id="lowBandsNote"></p>
+        <div class="table-wrap fit"><table id="lowBands" class="data bands"></table></div>
+      </details>
     </section>
 
     <section id="view-signals" hidden>
@@ -256,6 +258,44 @@
         <p class="note">分享連結（含目前的條件）：<a id="labLink" href="#/lab">開啟</a></p>
         <p class="note">要讓這個規則每天產生買賣訊號與觸發價，把下面的 JSON 告訴我，或加進 <code>strategies/kdj_macd_lab/rules.json</code> 後執行每日更新。</p>
         <textarea id="labJson" class="digest" rows="8" readonly></textarea>
+      </details>
+    </section>
+
+    <section id="view-label" hidden>
+      <div class="stock-head">
+        <h2>盲測標註：看不到未來時，你會買還是賣？</h2>
+        <span class="muted" id="lbCount"></span>
+      </div>
+      <p class="note">隨機抽一檔股票的某一天，只顯示到那天為止的 120 個交易日。判斷<strong>明天開盤</strong>要買進、賣出（或放空）還是不動作，按下後才揭曉接下來 20 個交易日。標註存在這台裝置的瀏覽器裡（可匯出、匯入）；標得越多，「你的分身」模型越能學會你的判斷方式。</p>
+      <div class="filters slim">
+        <label class="check"><input type="checkbox" id="lbBlind" checked> 隱藏股票名稱、日期與價格</label>
+        <label class="field-row">標的 <select id="lbUni"></select></label>
+        <label class="field-row">出題 <select id="lbFocus"><option value="mix">一半隨機、一半在高低檔</option><option value="rand">完全隨機</option><option value="extreme">只出 KD 高低檔</option></select></label>
+      </div>
+      <div class="panel lb-panel">
+        <div class="pane-legend" id="lbHead"></div>
+        <div id="lbChart"></div>
+        <div class="lb-actions" id="lbActions">
+          <button type="button" class="btn lb-buy" data-lb="buy">買進 <kbd>B</kbd></button>
+          <button type="button" class="btn lb-hold" data-lb="hold">不動作 <kbd>H</kbd></button>
+          <button type="button" class="btn lb-sell" data-lb="sell">賣出／放空 <kbd>S</kbd></button>
+          <button type="button" class="btn primary" id="lbNext" hidden>下一題 <kbd>Enter</kbd></button>
+          <button type="button" class="btn" id="lbSkip">換一題</button>
+        </div>
+        <p class="callout lb-result" id="lbResult" hidden></p>
+      </div>
+      <div class="lab-grid">
+        <section class="panel lab-side"><h3>你的標註成績</h3><div id="lbStats"></div></section>
+        <section class="panel lab-side"><h3>你的分身模型（邊標註邊訓練）</h3><div id="lbModel"></div></section>
+      </div>
+      <details class="trades">
+        <summary>最近的標註與資料管理</summary>
+        <div id="lbRecent"></div>
+        <div class="actions">
+          <button type="button" class="btn" id="lbExport">匯出標註（JSON）</button>
+          <label class="btn">匯入標註<input type="file" id="lbImport" accept=".json,application/json" hidden></label>
+          <button type="button" class="btn" id="lbClear">清除全部</button>
+        </div>
       </details>
     </section>
 

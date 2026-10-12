@@ -18,7 +18,7 @@ let S;
 const stockCache = new Map();
 const state = { tab: "low", period: "oos", universe: "stocks", metric: "cagr_diff", cvMetric: "sharpe", code: "2330", focus: null, from: "", to: "", log: true, sort: { key: "cagr_med", asc: false },
   sigUniverse: "all", sigView: "all", sigNear: 0.03, sigQPeriod: "oos" };
-const TABS = ["low", "signals", "overview", "stock", "lab", "strategies"];
+const TABS = ["low", "signals", "overview", "stock", "lab", "label", "strategies"];
 const shown = new Set(["buy_hold", "dca"]);
 const shownMa = new Set(MAS.map(([n]) => n));
 try { const saved = JSON.parse(localStorage.getItem("mas")); if (Array.isArray(saved)) { shownMa.clear(); saved.forEach((n) => shownMa.add(n)); } } catch {}
@@ -109,6 +109,7 @@ function render() {
   if (state.tab === "low") renderLow();
   else if (state.tab === "signals") renderSignals();
   else if (state.tab === "lab") renderLab();
+  else if (state.tab === "label") renderLabel();
   else if (state.tab === "overview") renderOverview();
   else if (state.tab === "stock") renderStock();
   else renderStrategies();
@@ -375,58 +376,72 @@ const LOW_MODES = {
 };
 const LOW_UNIS = [["all", "全部"], ["stock", "50 檔"], ["extra", "代表股"], ["etf", "ETF"]];
 const lowState = { mode: "low", uni: "all", filter: "all", sort: "score" };
-const SP = { w: 240, h: 108, top: 11, priceH: 34, kdY: 62, kdH: 20, mY: 88, mH: 18 };
+const SP = { w: 240, h: 124, top: 14, priceH: 32, kdY: 62, kdH: 18, mY: 87, mH: 18, dateY: 119 };
 
-// Thumbnail of the last sessions: close line with the window's high / low marked, KD with 20 / 80 guides,
-// MACD histogram (red / green) with the DIF line.
+// Framed thumbnail of the last sessions: close line with the window's high / low marked, KD with 20 / 80 guides,
+// MACD histogram (red / green) with the DIF line, panel dividers and the first / last date on the bottom edge.
 function sparkSvg(r, dates) {
-  const sp = r.spark, c = sp.c, n = c.length, X = (i) => 1 + (i / (n - 1)) * (SP.w - 2);
+  const sp = r.spark, c = sp.c, n = c.length, X = (i) => 4 + (i / (n - 1)) * (SP.w - 8);
   let hi = 0, lo = 0;
   c.forEach((v, i) => { if (v > c[hi]) hi = i; if (v < c[lo]) lo = i; });
   const pr = c[hi] - c[lo] || 1, Y = (v) => SP.top + (1 - (v - c[lo]) / pr) * SP.priceH;
   const pts = (arr, f) => arr.map((v, i) => `${X(i).toFixed(1)},${f(v).toFixed(1)}`).join(" ");
   const line = pts(c, Y);
-  const area = `1,${SP.top + SP.priceH} ${line} ${X(n - 1).toFixed(1)},${SP.top + SP.priceH}`;
+  const area = `${X(0).toFixed(1)},${SP.top + SP.priceH} ${line} ${X(n - 1).toFixed(1)},${SP.top + SP.priceH}`;
   const mark = (i, cls, above) => {
-    const x = Math.min(Math.max(X(i), 20), SP.w - 20), y = above ? Y(c[i]) - 3.5 : Y(c[i]) + 10.5;
+    const x = Math.min(Math.max(X(i), 24), SP.w - 24), y = above ? Y(c[i]) - 3.5 : Y(c[i]) + 10.5;
     return `<circle class="sp-${cls}" cx="${X(i).toFixed(1)}" cy="${Y(c[i]).toFixed(1)}" r="2.6"/><text class="sp-t sp-${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle">${cls === "hi" ? "高" : "低"} ${fmtPx(c[i])}</text>`;
   };
   const KY = (v) => SP.kdY + (1 - Math.max(0, Math.min(100, v)) / 100) * SP.kdH;
   const m = Math.max(...sp.osc.map(Math.abs), ...sp.dif.map(Math.abs)) || 1;
   const MY = (v) => SP.mY + SP.mH / 2 - (v / m) * (SP.mH / 2);
-  const bw = Math.max(1, (SP.w - 2) / n - 0.8);
+  const bw = Math.max(1, (SP.w - 8) / n - 0.8);
   const bars = sp.osc.map((v, i) => `<rect class="${v >= 0 ? "sp-up" : "sp-dn"}" x="${(X(i) - bw / 2).toFixed(1)}" y="${Math.min(MY(v), MY(0)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.6, Math.abs(MY(v) - MY(0))).toFixed(1)}"/>`).join("");
   const ds = sp.dates || dates;
-  const hline = (y, cls) => `<line class="${cls}" x1="0" x2="${SP.w}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/>`;
+  const hline = (y, cls) => `<line class="${cls}" x1="4" x2="${SP.w - 4}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/>`;
   return `<svg class="spark" data-code="${r.code}" width="${SP.w}" height="${SP.h}" viewBox="0 0 ${SP.w} ${SP.h}" role="img" aria-label="${esc(r.name)} ${ds[0]} 至 ${ds[n - 1]} 走勢：最高 ${fmtPx(c[hi])}（${ds[hi]}），最低 ${fmtPx(c[lo])}（${ds[lo]}），收盤 ${fmtPx(c[n - 1])}">`
+    + `<rect class="sp-frame" x="0.5" y="0.5" width="${SP.w - 1}" height="${SP.h - 1}" rx="6"/>`
+    + hline(56, "sp-div") + hline(83, "sp-div") + hline(109, "sp-div")
     + `<polygon class="sp-area" points="${area}"/><polyline class="sp-line" points="${line}"/>`
     + mark(hi, "hi", true) + mark(lo, "lo", false)
     + `<circle class="sp-last" cx="${X(n - 1).toFixed(1)}" cy="${Y(c[n - 1]).toFixed(1)}" r="2.2"/>`
     + hline(KY(80), "sp-guide") + hline(KY(20), "sp-guide")
-    + `<polyline class="sp-d" points="${pts(sp.d, KY)}"/><polyline class="sp-k" points="${pts(sp.k, KY)}"/><text class="sp-t" x="2" y="${SP.kdY + 7}">KD</text>`
+    + `<polyline class="sp-d" points="${pts(sp.d, KY)}"/><polyline class="sp-k" points="${pts(sp.k, KY)}"/><text class="sp-t sp-lab" x="6" y="${SP.kdY + 2}">KD</text>`
     + hline(MY(0), "sp-zero") + bars
-    + `<polyline class="sp-k" points="${pts(sp.dif, MY)}"/><text class="sp-t" x="2" y="${SP.mY + 6}">MACD</text>`
+    + `<polyline class="sp-k" points="${pts(sp.dif, MY)}"/><text class="sp-t sp-lab" x="6" y="${SP.mY + 2}">MACD</text>`
+    + `<text class="sp-t" x="6" y="${SP.dateY}">${ds[0]}</text><text class="sp-t" x="${SP.w - 6}" y="${SP.dateY}" text-anchor="end">${ds[n - 1]}</text>`
     + `<rect class="sp-hit" x="0" y="0" width="${SP.w}" height="${SP.h}"/></svg>`;
 }
+
+// Tags in order of importance; at most four are shown on a row.
+const TAG_ORDER = {
+  low: ["rebound", "kd_bot_div", "dif_bot_div", "kd_bot_div_hidden", "kdj_low", "macd_neg", "k_up", "osc_up", "j_neg"],
+  high: ["weak", "kd_top_div", "dif_top_div", "kd_top_div_hidden", "kdj_high", "macd_pos", "k_down", "osc_down", "j_hi"],
+};
+const lowKey = { low: ["both", "turn", "rebound"], high: ["both", "turn", "weak"] };
 
 async function renderLow() {
   const L = await loadLow();
   if (state.tab !== "low") return;
   if (!L) { $("lowAsof").textContent = "尚未產生排行資料（執行 python daily_update.py）"; return; }
-  const M = LOW_MODES[lowState.mode];
+  const M = LOW_MODES[lowState.mode], high = lowState.mode === "high";
   if (!M.filters.some((f) => f[0] === lowState.filter)) lowState.filter = "all";
   $("lowTitle").textContent = M.title;
-  $("lowNote").innerHTML = M.note;
+  $("lowNote").innerHTML = high
+    ? "KDJ 與 MACD 越高排越前面。<strong>注意：歷史上高點之後平均反而續漲</strong>，適合找持股出場時機，放空請設停損。"
+    : "KDJ 與 MACD 越低排越前面。分數 0–100；只有 90 分以上的極端低點，之後平均比平常好。";
   $("lowBandsTitle").textContent = M.bandsTitle;
   $("lowBandsNote").innerHTML = M.bandsNote;
-  $("lowAsof").textContent = `${L.asof} 收盤後・更新於 ${L.generated.replace("T", " ")}`;
+  $("lowAsof").textContent = `${L.asof} 收盤後`;
   seg($("lowMode"), [["low", "買點：低點排行"], ["high", "賣點・做空：高點排行"]], lowState.mode, (v) => { lowState.mode = v; lowState.filter = "all"; renderLow(); });
-  seg($("lowUniverse"), LOW_UNIS, lowState.uni, (v) => { lowState.uni = v; renderLow(); });
-  seg($("lowFilter"), M.filters.map(([k, t]) => [k, t]), lowState.filter, (v) => { lowState.filter = v; renderLow(); });
-  seg($("lowSort"), M.sorts, lowState.sort, (v) => { lowState.sort = v; renderLow(); });
+  const opts = (el, list, v, on) => { el.innerHTML = list.map(([k, t]) => `<option value="${k}" ${k === v ? "selected" : ""}>${t}</option>`).join(""); el.onchange = () => on(el.value); };
+  opts($("lowUniverse"), LOW_UNIS, lowState.uni, (v) => { lowState.uni = v; renderLow(); });
+  opts($("lowFilter"), M.filters.map(([k, t]) => [k, t]), lowState.filter, (v) => { lowState.filter = v; renderLow(); });
+  opts($("lowSort"), M.sorts, lowState.sort, (v) => { lowState.sort = v; renderLow(); });
   const inUni = L.rows.filter((r) => lowState.uni === "all" || r.kind === lowState.uni);
   const count = (k) => inUni.filter(M.filters.find((f) => f[0] === k)[2]).length;
-  $("lowCounts").innerHTML = "今天：" + M.filters.slice(1).map(([k, t]) => `${t} <b>${count(k)}</b> 檔`).join("・") + `（共 ${inUni.length} 檔）`;
+  $("lowCounts").innerHTML = lowKey[lowState.mode].map((k) => `<button type="button" class="chip-btn" data-f="${k}">${M.filters.find((f) => f[0] === k)[1]} <b>${count(k)}</b></button>`).join("");
+  $("lowCounts").querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { lowState.filter = lowState.filter === b.dataset.f ? "all" : b.dataset.f; renderLow(); }));
 
   const test = M.filters.find((f) => f[0] === lowState.filter)[2];
   const by = {
@@ -437,33 +452,35 @@ async function renderLow() {
   }[lowState.sort];
   const rows = inUni.filter(test).sort(by);
   const histCell = (h) => {
-    if (!h) return "—";
-    if (!h.n) return `<span class="muted">2010 年後沒出現過</span>`;
-    const updown = lowState.mode === "high" ? `下跌 ${pct(1 - h.up, 0)}（平常 ${pct(1 - h.base_up, 0)}）` : `上漲 ${pct(h.up, 0)}（平常 ${pct(h.base_up, 0)}）`;
-    return `${h.n} 次，平均 <span class="${h.mean >= 0 ? "pos" : "neg"}">${spct(h.mean)}</span><br><span class="muted">平常 ${spct(h.base)}；${updown}</span>`;
+    if (!h || !h.n) return `<span class="muted">—</span>`;
+    return `<span class="muted">過去 ${h.n} 次之後 20 日</span><br><span class="${h.mean >= h.base ? "pos" : "neg"}">${spct(h.mean)}</span> <span class="muted">平常 ${spct(h.base)}</span>`;
   };
   const ruleCell = (r) => {
-    const short = lowState.mode === "high" ? (r.short === "ok" ? `<span class="tag">可融券</span>` : r.short === "x" ? `<span class="tag warn-tag">停止融券</span>` : "") : "";
-    if (!r.rule) return short || `<span class="muted">—</span>`;
-    const t = lowState.mode === "high" ? r.rule.sell : r.rule.buy;
-    const what = lowState.mode === "high" ? "賣出" : "買進";
-    return `${actChip(r.rule.a, r.rule.side)}${t ? `<br><span class="muted">明日收盤 ${trigCond(t)} ${what}（${trigDist(t)}）</span>` : ""}${short ? "<br>" + short : ""}`;
+    const short = high && r.short === "x" ? `<br><span class="tag warn-tag">停止融券</span>` : "";
+    if (!r.rule) return (short || `<span class="muted">—</span>`);
+    const t = high ? r.rule.sell : r.rule.buy;
+    return `${actChip(r.rule.a, r.rule.side)}${t ? `<br><span class="muted">${trigCond(t)} ${high ? "賣" : "買"}</span>` : ""}${short}`;
   };
-  const kindText = (r) => (r.kind === "extra" ? `代表股${r.sector ? "・" + esc(r.sector) : ""}` : r.kind === "etf" ? "ETF" : "0050 成分股");
-  const tags = (r) => M.tags.filter((f) => r.flags.includes(f)).map((f) => `<span class="tag ${f === M.hot ? (lowState.mode === "high" ? "hot-sell" : "hot") : M.turn.includes(f) ? (lowState.mode === "high" ? "turn-sell" : "turn") : ""}">${LOW_TAGS[f]}</span>`).join("")
-    + (r[M.stuck] >= 3 ? `<span class="tag">${M.stuckText} ${r[M.stuck]} 天</span>` : "")
-    + (r[M.days] ? `<span class="tag">兩者皆${M.word} ${r[M.days]} 天</span>` : "");
-  const extra = (r) => (lowState.mode === "high" ? `DIF ${num(r.dif_pct)}%・MACD 高檔 ${num(r.macd_high, 0)}` : `DIF ${num(r.dif_pct)}%・MACD 低檔 ${num(r.macd_low, 0)}`);
+  const kindBadge = (r) => (r.kind === "extra" ? `<span class="kind">代表股</span>` : r.kind === "etf" ? `<span class="kind">ETF</span>` : "");
+  const tags = (r) => {
+    const t = TAG_ORDER[lowState.mode].filter((f) => r.flags.includes(f)).slice(0, 3)
+      .map((f) => `<span class="tag ${f === M.hot ? (high ? "hot-sell" : "hot") : M.turn.includes(f) ? (high ? "turn-sell" : "turn") : ""}">${LOW_TAGS[f]}</span>`);
+    if (r[M.stuck] >= 3) t.push(`<span class="tag">${M.stuckText} ${r[M.stuck]} 天</span>`);
+    return t.slice(0, 4).join("");
+  };
+  const detail = (r) => (high
+    ? `KDJ 高檔 ${num(r.kdj_high, 0)}・MACD 高檔 ${num(r.macd_high, 0)}・J ${num(r.j, 0)}・DIF ${num(r.dif_pct)}%`
+    : `KDJ 低檔 ${num(r.kdj_low, 0)}・MACD 低檔 ${num(r.macd_low, 0)}・J ${num(r.j, 0)}・DIF ${num(r.dif_pct)}%`);
   const body = rows.map((r, i) => `<tr class="clickable" data-code="${r.code}">
     <td class="c-rank">${i + 1}</td>
-    <td class="c-name"><a class="link-btn" href="#/stock/${r.code}"><b>${r.code} ${esc(r.name)}</b></a><br><span class="muted">${kindText(r)}</span><br>
+    <td class="c-name"><a class="link-btn" href="#/stock/${r.code}"><b>${r.code} ${esc(r.name)}</b></a> ${kindBadge(r)}<br>
       ${fmtPx(r.close)} <span class="${r.chg > 0 ? "pos" : r.chg < 0 ? "neg" : ""}">${spct(r.chg, 2)}</span><div class="tags">${tags(r)}</div></td>
     <td class="c-spark">${sparkSvg(r, L.spark_dates)}</td>
-    <td class="c-score"><span class="score"><b>${num(r[M.score], 0)}</b><span class="bar ${lowState.mode}" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r[M.score]))}%"></i></span></span>
-      <span class="muted">K ${num(r.k, 0)}・D ${num(r.d, 0)}・J ${num(r.j, 0)}<br>${extra(r)}</span></td>
+    <td class="c-score" title="${detail(r)}"><span class="score"><b>${num(r[M.score], 0)}</b><span class="bar ${lowState.mode}" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r[M.score]))}%"></i></span></span>
+      <span class="muted">K ${num(r.k, 0)}・D ${num(r.d, 0)}</span></td>
     <td class="c-hist">${histCell(r[M.hist])}</td>
     <td class="c-rule">${ruleCell(r)}</td></tr>`).join("");
-  $("lowTable").innerHTML = `<thead><tr><th>#</th><th>股票</th><th>近 ${L.spark || 60} 個交易日<br><span class="muted">收盤（標出高低點）、KD、MACD</span></th><th>${M.word}點分數</th><th>過去同樣${M.word}點後 20 日</th><th>你的規則${lowState.mode === "high" ? "／融券" : ""}</th></tr></thead>`
+  $("lowTable").innerHTML = `<thead><tr><th>#</th><th>股票</th><th>近 ${L.spark || 60} 日</th><th>${M.word}點分數</th><th title="過去 KDJ 與 MACD 同時在${M.word}檔之後 20 個交易日的平均漲跌">之後 20 日</th><th>你的規則</th></tr></thead>`
     + `<tbody>${body || `<tr><td colspan="6">今天沒有符合這個條件的股票。</td></tr>`}</tbody>`;
   const t = $("lowTable");
   t.onclick = (e) => {
@@ -478,13 +495,13 @@ async function renderLow() {
     if (!svg) return hideTip();
     const r = L.rows.find((x) => x.code === svg.dataset.code), sp = r.spark, n = sp.c.length;
     const box = svg.getBoundingClientRect();
-    const i = Math.max(0, Math.min(n - 1, Math.round(((e.clientX - box.left) / box.width) * (n - 1))));
+    const i = Math.max(0, Math.min(n - 1, Math.round(((e.clientX - box.left - 4 * box.width / SP.w) / (box.width * (SP.w - 8) / SP.w)) * (n - 1))));
     showTip(e, `<b>${r.code} ${esc(r.name)}</b>　${(sp.dates || L.spark_dates)[i]}<br>收盤 ${fmtPx(sp.c[i])}<br>K ${sp.k[i]}・D ${sp.d[i]}<br>DIF ${num(sp.dif[i])}%・柱狀體 ${num(sp.osc[i])}%（佔股價）`);
   };
   t.onmouseleave = hideTip;
 
   const per = [["is", "樣本內 2010–2020"], ["oos", "樣本外 2021–今"]];
-  const high = lowState.mode === "high", B = L[M.bands], E = L[M.episodes];
+  const B = L[M.bands], E = L[M.episodes];
   const cell = (b) => `<td class="${b.ex >= 0 ? "pos" : "neg"}" title="${b.n.toLocaleString()} 個交易日">${spct(b.ex, 2)}</td><td>${pct(high ? 1 - b.up : b.up, 0)}</td>`;
   const bandRows = B.is.map((b, i) => `<tr><td>${b.lo}–${Math.round(b.hi)}${b.lo >= 90 ? ` 最${M.word}點` : ""}</td>${per.map(([p]) => cell(B[p][i])).join("")}</tr>`).join("");
   const epRow = `<tr class="baseline"><td>${M.epText}</td>${per.map(([p]) => cell(E[p])).join("")}</tr>`;
@@ -684,6 +701,285 @@ async function renderStockSignals(st) {
   }).join("");
   $("stSigTable").innerHTML = `<thead><tr><th>策略</th><th>明日開盤</th><th>部位</th><th>目前部位</th><th>明日收盤觸發價（後天開盤執行）</th><th>買訊品質</th><th>賣訊品質</th></tr></thead><tbody>${rows}</tbody>`;
   $("stSigTable").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => setFocus(b.dataset.focus)));
+}
+
+// ---------- blind labelling (盲測標註) ----------
+// A random stock and day; only the 120 sessions up to that day are shown. The viewer decides what to do at the next
+// open; the next 20 sessions are revealed after the click. Labels live in this browser (export / import as JSON).
+// "Your twin" is a softmax regression on 21 KDJ / MACD / MA / price features, retrained after every label once there
+// are enough; it guesses each answer before it is revealed, so its hit rate is an honest out-of-sample number.
+const LB_KEY = "labels_v1", LB_SHOW = 120, LB_FUT = 20, LB_MIN = 20;
+const LB_CLASSES = ["sell", "hold", "buy"];
+const LB_TEXT = { buy: "買進", hold: "不動作", sell: "賣出／放空" };
+const LB_SIDE = { buy: 1, hold: 0, sell: -1 };
+const LB_FEATS = ["K 值", "D 值", "J 值", "K − D", "K 一日變化", "DIF／股價", "MACD 線／股價", "柱狀體／股價", "柱狀體一日變化",
+  "距週線", "距月線", "距季線", "距年線", "5 日漲跌", "20 日漲跌", "60 日漲跌", "20 日波動度", "60 日區間位置", "量比", "高檔鈍化天數", "低檔鈍化天數"];
+const lbState = { blind: true, uni: "all", focus: "mix", cur: null, model: null, cv: null, ready: false };
+let lbData = [];
+try { lbData = JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch {}
+const lbSave = () => { try { localStorage.setItem(LB_KEY, JSON.stringify(lbData)); } catch {} };
+const lbBase = new Map();
+
+function lbFeatures(st, t) {
+  const { c, v } = st, k = st.kd.k, d = st.kd.d, j = st.kd.j, dif = st.macd.dif, sig = st.macd.macd, osc = st.macd.osc, ma = st.ma;
+  let hi = -Infinity, lo = Infinity, vol = 0, vavg = 0;
+  for (let i = t - 59; i <= t; i++) { hi = Math.max(hi, c[i]); lo = Math.min(lo, c[i]); }
+  for (let i = t - 19; i <= t; i++) { vol += Math.log(c[i] / c[i - 1]) ** 2; vavg += v[i] / 20; }
+  let up = 0, dn = 0;
+  for (let i = t; i >= 0 && k[i] > 80; i--) up++;
+  for (let i = t; i >= 0 && k[i] < 20; i--) dn++;
+  return [k[t] / 100, d[t] / 100, j[t] / 100, (k[t] - d[t]) / 100, (k[t] - k[t - 1]) / 100, (dif[t] / c[t]) * 100, (sig[t] / c[t]) * 100,
+    (osc[t] / c[t]) * 100, ((osc[t] - osc[t - 1]) / c[t]) * 100, c[t] / ma[5][t] - 1, c[t] / ma[20][t] - 1, c[t] / ma[60][t] - 1,
+    c[t] / ma[240][t] - 1, c[t] / c[t - 5] - 1, c[t] / c[t - 20] - 1, c[t] / c[t - 60] - 1, Math.sqrt(vol / 20),
+    (c[t] - lo) / (hi - lo || 1), v[t] / (vavg || 1), up, dn].map((x) => (Number.isFinite(x) ? x : 0));
+}
+
+// Average move from the next open to the open 20 sessions later, over the stock's whole history (the "平常").
+function lbBaseline(st) {
+  if (!lbBase.has(st.code)) {
+    let s = 0, n = 0;
+    for (let i = 60; i + LB_FUT + 1 < st.o.length; i++) { s += st.o[i + LB_FUT + 1] / st.o[i + 1] - 1; n++; }
+    lbBase.set(st.code, n ? s / n : 0);
+  }
+  return lbBase.get(st.code);
+}
+
+// ---- the twin: softmax regression with L2, standardized features ----
+function lbFit(rows, iters = 300) {
+  const p = LB_FEATS.length, X = rows.map((r) => r.f), y = rows.map((r) => LB_CLASSES.indexOf(r.label));
+  const mu = Array(p).fill(0), sd = Array(p).fill(0);
+  X.forEach((x) => x.forEach((v, i) => (mu[i] += v / X.length)));
+  X.forEach((x) => x.forEach((v, i) => (sd[i] += (v - mu[i]) ** 2 / X.length)));
+  sd.forEach((v, i) => (sd[i] = Math.sqrt(v) || 1));
+  const Z = X.map((x) => x.map((v, i) => Math.max(-5, Math.min(5, (v - mu[i]) / sd[i]))));
+  const W = [0, 1, 2].map(() => Array(p).fill(0)), b = [0, 0, 0], lr = 0.3, l2 = 0.02;
+  for (let it = 0; it < iters; it++) {
+    const gW = [0, 1, 2].map(() => Array(p).fill(0)), gb = [0, 0, 0];
+    Z.forEach((z, n) => {
+      const pr = lbSoftmax(W, b, z);
+      for (let k = 0; k < 3; k++) {
+        const e = pr[k] - (y[n] === k ? 1 : 0);
+        gb[k] += e / Z.length;
+        for (let i = 0; i < p; i++) gW[k][i] += (e * z[i]) / Z.length;
+      }
+    });
+    for (let k = 0; k < 3; k++) {
+      b[k] -= lr * gb[k];
+      for (let i = 0; i < p; i++) W[k][i] -= lr * (gW[k][i] + l2 * W[k][i]);
+    }
+  }
+  return { mu, sd, W, b, n: rows.length };
+}
+function lbSoftmax(W, b, z) {
+  const s = W.map((w, k) => b[k] + w.reduce((a, v, i) => a + v * z[i], 0)), m = Math.max(...s), e = s.map((v) => Math.exp(v - m)), t = e.reduce((a, v) => a + v, 0);
+  return e.map((v) => v / t);
+}
+const lbPredict = (m, f) => lbSoftmax(m.W, m.b, f.map((v, i) => Math.max(-5, Math.min(5, (v - m.mu[i]) / m.sd[i]))));
+const lbTrainable = () => lbData.length >= LB_MIN && LB_CLASSES.filter((c) => lbData.filter((r) => r.label === c).length >= 3).length >= 2;
+
+function lbRetrain() {
+  if (!lbTrainable()) { lbState.model = lbState.cv = null; return; }
+  lbState.model = lbFit(lbData);
+  // 5-fold cross-validated accuracy on a fixed shuffle (Park-Miller seed), against always guessing the commonest answer
+  const idx = lbData.map((_, i) => i);
+  let seed = 12345;
+  for (let i = idx.length - 1; i > 0; i--) { seed = (seed * 16807) % 2147483647; const j = seed % (i + 1); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+  let hit = 0;
+  for (let f = 0; f < 5; f++) {
+    const test = idx.filter((_, k) => k % 5 === f), train = idx.filter((_, k) => k % 5 !== f).map((i) => lbData[i]);
+    if (!test.length || train.length < 10) continue;
+    const m = lbFit(train, 200);
+    test.forEach((i) => { const pr = lbPredict(m, lbData[i].f); if (LB_CLASSES[pr.indexOf(Math.max(...pr))] === lbData[i].label) hit++; });
+  }
+  const counts = LB_CLASSES.map((c) => lbData.filter((r) => r.label === c).length);
+  lbState.cv = { acc: hit / lbData.length, base: Math.max(...counts) / lbData.length };
+}
+
+// ---- the chart: candles + MA5/20/60, KD(J), MACD; the future area stays blank until the answer ----
+function lbChart(st, t, revealed, blind, narrow) {
+  // phones: the last 60 sessions on a taller canvas so candles stay readable
+  const show = narrow ? 60 : LB_SHOW, W = narrow ? 420 : 760, H = narrow ? 470 : 430, L = 8, R = narrow ? 50 : 58;
+  const s = t - show + 1, total = show + LB_FUT, e = revealed ? t + LB_FUT : t;
+  const X = (i) => L + ((i - s + 0.5) / total) * (W - L - R), bw = Math.max(1.5, ((W - L - R) / total) * 0.65);
+  const P = { y0: 14, y1: Math.round(H * 0.54) }, K = { y0: Math.round(H * 0.54) + 18, y1: Math.round(H * 0.73) + 18 };
+  const Mp = { y0: K.y1 + 18, y1: H - 14 };
+  const norm = blind ? 100 / st.c[t] : 1;
+  let hi = -Infinity, lo = Infinity;
+  for (let i = s; i <= e; i++) { hi = Math.max(hi, st.h[i]); lo = Math.min(lo, st.l[i]); }
+  const pad = (hi - lo) * 0.06 || 1, YP = (v) => P.y0 + (1 - (v - lo + pad) / (hi - lo + 2 * pad)) * (P.y1 - P.y0);
+  const YK = (v) => K.y0 + (1 - Math.max(-10, Math.min(110, v)) / 100) * (K.y1 - K.y0);
+  let mm = 0;
+  for (let i = s; i <= e; i++) mm = Math.max(mm, Math.abs(st.macd.dif[i]), Math.abs(st.macd.macd[i]), Math.abs(st.macd.osc[i]));
+  const YM = (v) => (Mp.y0 + Mp.y1) / 2 - (v / (mm || 1)) * ((Mp.y1 - Mp.y0) / 2);
+  const out = [`<svg class="lb-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="盲測走勢圖">`];
+  const fut = (i) => (i > t ? ' class="lb-fut"' : "");
+  for (const p of [P, K, Mp]) out.push(`<rect class="sp-frame" x="${L}" y="${p.y0 - 6}" width="${W - L - R}" height="${p.y1 - p.y0 + 12}" rx="6"/>`);
+  if (!revealed) out.push(`<rect class="lb-hidden" x="${X(t + 0.5)}" y="8" width="${W - R - X(t + 0.5)}" height="${H - 16}" rx="6"/><text class="lb-q" x="${(X(t + 1) + W - R) / 2}" y="${(P.y0 + P.y1) / 2}" text-anchor="middle">？</text><text class="sp-t" x="${(X(t + 1) + W - R) / 2}" y="${(P.y0 + P.y1) / 2 + 24}" text-anchor="middle">接下來 20 天</text>`);
+  for (const [v, cls] of [[80, "sp-guide"], [20, "sp-guide"]]) out.push(`<line class="${cls}" x1="${L}" x2="${W - R}" y1="${YK(v)}" y2="${YK(v)}"/>`);
+  out.push(`<line class="sp-zero" x1="${L}" x2="${W - R}" y1="${YM(0)}" y2="${YM(0)}"/>`);
+  for (let i = s; i <= e; i++) {
+    const up = st.c[i] >= st.o[i], cls = up ? "lb-up" : "lb-dn";
+    out.push(`<g${fut(i)}><line class="${cls}-w" x1="${X(i)}" x2="${X(i)}" y1="${YP(st.h[i])}" y2="${YP(st.l[i])}"/><rect class="${cls}" x="${X(i) - bw / 2}" y="${Math.min(YP(st.o[i]), YP(st.c[i]))}" width="${bw}" height="${Math.max(0.8, Math.abs(YP(st.o[i]) - YP(st.c[i])))}"/>`
+      + `<rect class="${st.macd.osc[i] >= 0 ? "sp-up" : "sp-dn"}" x="${X(i) - bw / 2}" y="${Math.min(YM(st.macd.osc[i]), YM(0))}" width="${bw}" height="${Math.max(0.6, Math.abs(YM(st.macd.osc[i]) - YM(0)))}"/></g>`);
+  }
+  const path = (arr, Y, cls, from = s) => {
+    const pts = [];
+    for (let i = from; i <= e; i++) if (Number.isFinite(arr[i])) pts.push(`${X(i).toFixed(1)},${Y(arr[i]).toFixed(1)}`);
+    return `<polyline class="${cls}" points="${pts.join(" ")}"/>`;
+  };
+  out.push(path(st.ma[5], YP, "lb-ma5"), path(st.ma[20], YP, "lb-ma20"), path(st.ma[60], YP, "lb-ma60"));
+  out.push(path(st.kd.j, YK, "lb-j"), path(st.kd.d, YK, "sp-d"), path(st.kd.k, YK, "sp-k"));
+  out.push(path(st.macd.macd, YM, "sp-d"), path(st.macd.dif, YM, "sp-k"));
+  if (revealed) out.push(`<line class="lb-now" x1="${X(t) + bw}" x2="${X(t) + bw}" y1="8" y2="${H - 8}"/><text class="sp-t" x="${X(t) + bw + 4}" y="20">決策日</text>`);
+  out.push(`<circle class="sp-last" cx="${X(t)}" cy="${YP(st.c[t])}" r="3"/>`);
+  for (let q = 0; q <= 2; q++) {
+    const v = lo + ((hi - lo) * q) / 2;
+    out.push(`<text class="sp-t" x="${W - R + 6}" y="${YP(v) + 3}">${fmtPx(v * norm)}</text>`);
+  }
+  out.push(`<text class="sp-t" x="${W - R + 6}" y="${YK(80) + 3}">80</text><text class="sp-t" x="${W - R + 6}" y="${YK(20) + 3}">20</text><text class="sp-t sp-lab" x="${L + 6}" y="${K.y0 + 6}">KD（藍 K、橘 D、粉 J）</text>`);
+  out.push(`<text class="sp-t sp-lab" x="${L + 6}" y="${Mp.y0 + 6}">MACD（藍 DIF、橘 MACD 線、柱狀體）</text><text class="sp-t sp-lab" x="${L + 6}" y="${P.y0 + 6}">均線：藍 5 日、綠 20 日、黃 60 日</text>`);
+  if (!blind) out.push(`<text class="sp-t" x="${L + 4}" y="${H - 1}">${st.d[s]}</text><text class="sp-t" x="${X(t)}" y="${H - 1}" text-anchor="middle">${st.d[t]}</text>`);
+  out.push("</svg>");
+  return out.join("");
+}
+
+async function lbNew() {
+  const pool = S.stocks.filter((s) => lbState.uni === "all" || s.kind === lbState.uni);
+  for (let tries = 0; tries < 12; tries++) {
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const st = await loadStock(pick.code), n = st.d.length, lo = 260, hi = n - LB_FUT - 2;
+    if (hi - lo < 50) continue;
+    let t = lo + Math.floor(Math.random() * (hi - lo));
+    if (lbState.focus === "extreme" || (lbState.focus === "mix" && Math.random() < 0.5)) {
+      const cand = [];
+      for (let i = lo; i < hi; i++) if (st.kd.k[i] < 25 || st.kd.k[i] > 75) cand.push(i);
+      if (cand.length) t = cand[Math.floor(Math.random() * cand.length)];
+    }
+    const f = lbFeatures(st, t);
+    lbState.cur = { st, t, f, guess: lbState.model ? lbPredict(lbState.model, f) : null, answered: null };
+    return;
+  }
+}
+
+function lbAnswer(label) {
+  const c = lbState.cur;
+  if (!c || c.answered) return;
+  const { st, t } = c, o = st.o, base = lbBaseline(st);
+  const r20 = o[t + LB_FUT + 1] / o[t + 1] - 1, r5 = o[t + 6] / o[t + 1] - 1;
+  let mx = -Infinity, mn = Infinity;
+  for (let i = t + 1; i <= t + LB_FUT; i++) { mx = Math.max(mx, st.h[i]); mn = Math.min(mn, st.l[i]); }
+  const guess = c.guess ? LB_CLASSES[c.guess.indexOf(Math.max(...c.guess))] : null;
+  c.answered = { label, r5, r20, base, up: mx / o[t + 1] - 1, dn: mn / o[t + 1] - 1, guess, conf: c.guess ? Math.max(...c.guess) : null };
+  lbData.push({ code: st.code, d: st.d[t], i: t, label, f: c.f, r5: +r5.toFixed(5), r20: +r20.toFixed(5), base: +base.toFixed(5), guess, blind: lbState.blind, ts: Date.now() });
+  lbSave();
+  lbRender();
+  setTimeout(() => { lbRetrain(); lbRenderSide(); }, 0);
+}
+
+function lbRender() {
+  const c = lbState.cur;
+  if (!c) return;
+  const { st, t } = c, a = c.answered, blind = lbState.blind && !a;
+  $("lbHead").innerHTML = blind ? `<b>第 ${lbData.length + 1} 題</b><span class="muted">股票、日期與價格已隱藏（價格以決策日收盤 = 100 表示）</span>`
+    : `<b>${st.code} ${esc(st.name)}</b><span class="muted">決策日 ${st.d[t]}・收盤 ${fmtPx(st.c[t])}</span><a class="link-btn" href="#/stock/${st.code}?p=custom&from=${st.d[Math.max(0, t - 250)]}&to=${st.d[Math.min(st.d.length - 1, t + 60)]}">在個股頁看前後走勢</a>`;
+  $("lbChart").innerHTML = lbChart(st, t, !!a, lbState.blind && !a, $("lbChart").clientWidth < 560);
+  $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.disabled = !!a));
+  $("lbNext").hidden = !a;
+  $("lbSkip").hidden = !!a;
+  const res = $("lbResult");
+  res.hidden = !a;
+  if (!a) return;
+  const ex = a.r20 - a.base;
+  const verdict = a.label === "buy" ? (ex >= 0 ? "買進之後比平常好" : "買進之後比平常差")
+    : a.label === "sell" ? (ex <= 0 ? "賣出（放空）之後比平常弱，賣得好" : "賣出之後反而比平常強")
+    : Math.abs(a.r20) < 0.03 ? "不動作：之後走勢平淡" : `不動作：之後${a.r20 > 0 ? "上漲" : "下跌"} ${pct(Math.abs(a.r20))}`;
+  res.innerHTML = `<strong>你選「${LB_TEXT[a.label]}」</strong>${verdict}。隔天開盤起 5 日 <span class="${a.r5 >= 0 ? "pos" : "neg"}">${spct(a.r5)}</span>、20 日 <span class="${a.r20 >= 0 ? "pos" : "neg"}">${spct(a.r20)}</span>（這檔平常 20 日 ${spct(a.base)}）；20 日內最高 <span class="pos">${spct(a.up)}</span>、最低 <span class="neg">${spct(a.dn)}</span>。`
+    + (a.guess ? `<br>你的分身事先猜「${LB_TEXT[a.guess]}」（信心 ${pct(a.conf, 0)}）${a.guess === a.label ? "，猜對了。" : "，猜錯了。"}` : "")
+    + ` <span class="muted">按 Enter 或「下一題」繼續。</span>`;
+}
+
+function lbRenderSide() {
+  const n = lbData.length;
+  $("lbCount").textContent = `已標註 ${n} 筆（存在這台裝置）`;
+  const rows = LB_CLASSES.slice().reverse().map((c) => {
+    const g = lbData.filter((r) => r.label === c), ex = g.map((r) => r.r20 - r.base);
+    const good = c === "buy" ? g.filter((r) => r.r20 > r.base).length : c === "sell" ? g.filter((r) => r.r20 < r.base).length : null;
+    return `<tr><td>${actChip(LB_TEXT[c], LB_SIDE[c])}</td><td>${g.length}</td><td class="${mean(ex) >= 0 ? "pos" : "neg"}">${g.length ? spct(mean(ex)) : "—"}</td><td>${good === null || !g.length ? "—" : pct(good / g.length, 0)}</td></tr>`;
+  }).join("");
+  $("lbStats").innerHTML = n ? `<table class="data"><thead><tr><th>你的選擇</th><th>次數</th><th>之後 20 日<br>比平常多漲</th><th>判斷正確比例</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="note">「比平常多漲」＝之後 20 日的漲跌減去這檔股票平常 20 日的漲跌。買點越高越好、賣點越低越好；判斷正確＝買後比平常好，或賣後比平常差。</p>` : `<p class="note">還沒有標註。看圖後按「買進」「不動作」或「賣出／放空」。</p>`;
+
+  const m = lbState.model;
+  if (!m) {
+    const need = Math.max(0, LB_MIN - n);
+    $("lbModel").innerHTML = `<p class="note">${need ? `再標 <b>${need}</b> 筆` : "每一類（買、賣、不動作）至少各 3 筆、共兩類以上"}就會開始訓練。之後每標一筆，模型就用全部標註重新訓練一次（在瀏覽器裡、不到一秒）。</p>`;
+    return;
+  }
+  const recent = lbData.filter((r) => r.guess).slice(-30), hits = recent.filter((r) => r.guess === r.label).length;
+  const top = (k) => LB_FEATS.map((name, i) => [name, m.W[k][i] - (m.W[0][i] + m.W[1][i] + m.W[2][i]) / 3]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3)
+    .map(([name, w]) => `${name}${w > 0 ? "高" : "低"}`).join("、");
+  $("lbModel").innerHTML = `<p>用 <b>${m.n}</b> 筆標註訓練。交叉驗證猜中你的選擇 <b>${pct(lbState.cv.acc, 0)}</b>（每次都猜你最常選的那一類是 ${pct(lbState.cv.base, 0)}）。
+    ${recent.length ? `最近 ${recent.length} 題事先猜中 <b>${pct(hits / recent.length, 0)}</b>。` : ""}</p>
+    <p class="note">它學到你傾向在「${top(2)}」時買進，在「${top(0)}」時賣出。</p>
+    <p class="note">累積 300 筆以上（買、賣都要有一定數量）後，請按「匯出標註」把檔案給我：我會用 Python 做按時間切分的驗證，和你自己的成績、買進持有比較；如果分身真的學到東西，就把它變成正式策略，每天出訊號。</p>`;
+}
+
+function lbRecent() {
+  const last = lbData.slice(-12).reverse();
+  $("lbRecent").innerHTML = last.length ? `<table class="data"><thead><tr><th>股票</th><th>決策日</th><th>你的選擇</th><th>20 日</th><th>分身猜</th></tr></thead><tbody>${last.map((r) => {
+    const s = S.stocks.find((x) => x.code === r.code);
+    return `<tr><td><a class="link-btn" href="#/stock/${r.code}">${r.code} ${esc(s?.name || "")}</a></td><td>${r.d}</td><td>${actChip(LB_TEXT[r.label], LB_SIDE[r.label])}</td><td class="${r.r20 >= 0 ? "pos" : "neg"}">${spct(r.r20)}</td><td>${r.guess ? LB_TEXT[r.guess] : "—"}</td></tr>`;
+  }).join("")}</tbody></table>` : `<p class="note">還沒有標註。</p>`;
+}
+
+let lbInit = false;
+async function renderLabel() {
+  if (!lbInit) {
+    lbInit = true;
+    $("lbUni").innerHTML = LOW_UNIS.map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
+    $("lbUni").onchange = (e) => { lbState.uni = e.target.value; lbState.cur = null; renderLabel(); };
+    $("lbFocus").onchange = (e) => { lbState.focus = e.target.value; };
+    $("lbBlind").onchange = (e) => { lbState.blind = e.target.checked; lbRender(); };
+    $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.onclick = () => lbAnswer(b.dataset.lb)));
+    $("lbNext").onclick = async () => { await lbNew(); lbRender(); lbRecent(); };
+    $("lbSkip").onclick = async () => { await lbNew(); lbRender(); };
+    $("lbExport").onclick = () => {
+      const blob = new Blob([JSON.stringify({ version: 1, features: LB_FEATS, labels: lbData }, null, 1)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `kdj_macd_labels_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+    $("lbImport").onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const got = JSON.parse(await file.text()).labels || [];
+        const seen = new Set(lbData.map((r) => `${r.code}|${r.d}|${r.ts}`));
+        lbData.push(...got.filter((r) => r.f && r.label && !seen.has(`${r.code}|${r.d}|${r.ts}`)));
+        lbData.sort((a, b) => a.ts - b.ts);
+        lbSave(); lbRetrain(); lbRenderSide(); lbRecent();
+      } catch { alert("無法讀取這個檔案"); }
+      e.target.value = "";
+    };
+    $("lbClear").onclick = () => {
+      if (!confirm(`確定要刪除這台裝置上的 ${lbData.length} 筆標註嗎？（建議先匯出）`)) return;
+      lbData = []; lbSave(); lbRetrain(); lbRenderSide(); lbRecent();
+    };
+    addEventListener("keydown", (e) => {
+      if (state.tab !== "label" || e.target?.closest?.("input, select, textarea, button") || e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (!lbState.cur?.answered && ({ b: "buy", 1: "buy", h: "hold", 2: "hold", s: "sell", 3: "sell" })[k]) lbAnswer({ b: "buy", 1: "buy", h: "hold", 2: "hold", s: "sell", 3: "sell" }[k]);
+      else if (lbState.cur?.answered && (k === "enter" || k === "n")) $("lbNext").click();
+    });
+    lbRetrain();
+  }
+  if (!lbState.cur) await lbNew();
+  if (state.tab !== "label") return;
+  lbRender();
+  lbRenderSide();
+  lbRecent();
 }
 
 // ---------- rule lab ----------
