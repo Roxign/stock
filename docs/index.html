@@ -6,10 +6,10 @@
   <title>KDJ／MACD 高低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=12"></script>
+  <script type="module" src="app.js?v=13"></script>
 </head>
 <body>
   <header class="top">
@@ -274,7 +274,17 @@
       </div>
       <div class="panel lb-panel">
         <div class="pane-legend" id="lbHead"></div>
-        <div id="lbChart"></div>
+        <div class="lb-tools">
+          <button type="button" class="btn" data-z="in" aria-label="放大">＋ 放大</button>
+          <button type="button" class="btn" data-z="out" aria-label="縮小">－ 縮小</button>
+          <button type="button" class="btn" data-z="recent">最近</button>
+          <button type="button" class="btn" data-z="all">全部歷史</button>
+          <span class="muted">拖曳圖表可往回看歷史，滾輪或兩指可縮放</span>
+        </div>
+        <div class="pane-legend" id="lbLegend"></div>
+        <div class="lb-wrap"><div class="chart lb-price" id="lbPrice"></div><div class="lb-future" id="lbFuture" hidden><b>？</b><small>接下來 20 天</small></div></div>
+        <div class="chart lb-ind" id="lbKd"></div>
+        <div class="chart lb-ind" id="lbMacd"></div>
         <div class="lb-actions" id="lbActions">
           <button type="button" class="btn lb-buy" data-lb="buy">買進 <kbd>B</kbd></button>
           <button type="button" class="btn lb-hold" data-lb="hold">不動作 <kbd>H</kbd></button>

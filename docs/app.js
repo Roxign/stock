@@ -795,52 +795,135 @@ function lbRetrain() {
   lbState.cv = { acc: hit / lbData.length, base: Math.max(...counts) / lbData.length };
 }
 
-// ---- the chart: candles + MA5/20/60, KD(J), MACD; the future area stays blank until the answer ----
-function lbChart(st, t, revealed, blind, narrow) {
-  // phones: the last 60 sessions on a taller canvas so candles stay readable
-  const show = narrow ? 60 : LB_SHOW, W = narrow ? 420 : 760, H = narrow ? 470 : 430, L = 8, R = narrow ? 50 : 58;
-  const s = t - show + 1, total = show + LB_FUT, e = revealed ? t + LB_FUT : t;
-  const X = (i) => L + ((i - s + 0.5) / total) * (W - L - R), bw = Math.max(1.5, ((W - L - R) / total) * 0.65);
-  const P = { y0: 14, y1: Math.round(H * 0.54) }, K = { y0: Math.round(H * 0.54) + 18, y1: Math.round(H * 0.73) + 18 };
-  const Mp = { y0: K.y1 + 18, y1: H - 14 };
-  const norm = blind ? 100 / st.c[t] : 1;
-  let hi = -Infinity, lo = Infinity;
-  for (let i = s; i <= e; i++) { hi = Math.max(hi, st.h[i]); lo = Math.min(lo, st.l[i]); }
-  const pad = (hi - lo) * 0.06 || 1, YP = (v) => P.y0 + (1 - (v - lo + pad) / (hi - lo + 2 * pad)) * (P.y1 - P.y0);
-  const YK = (v) => K.y0 + (1 - Math.max(-10, Math.min(110, v)) / 100) * (K.y1 - K.y0);
-  let mm = 0;
-  for (let i = s; i <= e; i++) mm = Math.max(mm, Math.abs(st.macd.dif[i]), Math.abs(st.macd.macd[i]), Math.abs(st.macd.osc[i]));
-  const YM = (v) => (Mp.y0 + Mp.y1) / 2 - (v / (mm || 1)) * ((Mp.y1 - Mp.y0) / 2);
-  const out = [`<svg class="lb-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="盲測走勢圖">`];
-  const fut = (i) => (i > t ? ' class="lb-fut"' : "");
-  for (const p of [P, K, Mp]) out.push(`<rect class="sp-frame" x="${L}" y="${p.y0 - 6}" width="${W - L - R}" height="${p.y1 - p.y0 + 12}" rx="6"/>`);
-  if (!revealed) out.push(`<rect class="lb-hidden" x="${X(t + 0.5)}" y="8" width="${W - R - X(t + 0.5)}" height="${H - 16}" rx="6"/><text class="lb-q" x="${(X(t + 1) + W - R) / 2}" y="${(P.y0 + P.y1) / 2}" text-anchor="middle">？</text><text class="sp-t" x="${(X(t + 1) + W - R) / 2}" y="${(P.y0 + P.y1) / 2 + 24}" text-anchor="middle">接下來 20 天</text>`);
-  for (const [v, cls] of [[80, "sp-guide"], [20, "sp-guide"]]) out.push(`<line class="${cls}" x1="${L}" x2="${W - R}" y1="${YK(v)}" y2="${YK(v)}"/>`);
-  out.push(`<line class="sp-zero" x1="${L}" x2="${W - R}" y1="${YM(0)}" y2="${YM(0)}"/>`);
-  for (let i = s; i <= e; i++) {
-    const up = st.c[i] >= st.o[i], cls = up ? "lb-up" : "lb-dn";
-    out.push(`<g${fut(i)}><line class="${cls}-w" x1="${X(i)}" x2="${X(i)}" y1="${YP(st.h[i])}" y2="${YP(st.l[i])}"/><rect class="${cls}" x="${X(i) - bw / 2}" y="${Math.min(YP(st.o[i]), YP(st.c[i]))}" width="${bw}" height="${Math.max(0.8, Math.abs(YP(st.o[i]) - YP(st.c[i])))}"/>`
-      + `<rect class="${st.macd.osc[i] >= 0 ? "sp-up" : "sp-dn"}" x="${X(i) - bw / 2}" y="${Math.min(YM(st.macd.osc[i]), YM(0))}" width="${bw}" height="${Math.max(0.6, Math.abs(YM(st.macd.osc[i]) - YM(0)))}"/></g>`);
-  }
-  const path = (arr, Y, cls, from = s) => {
-    const pts = [];
-    for (let i = from; i <= e; i++) if (Number.isFinite(arr[i])) pts.push(`${X(i).toFixed(1)},${Y(arr[i]).toFixed(1)}`);
-    return `<polyline class="${cls}" points="${pts.join(" ")}"/>`;
+// ---- the chart: interactive (drag back through history, wheel / pinch zoom). Only bars up to the decision day are
+// loaded, so nothing after it can be scrolled into view until the answer; in blind mode the time axis shows sessions
+// relative to the decision day and prices are rebased to 100 at its close.
+let lbCharts = [], lbView = null;
+const LB_T0 = Date.UTC(2000, 0, 3) / 1000;
+
+function lbDestroy() {
+  lbCharts.forEach((c) => c.chart.remove());
+  lbCharts = [];
+}
+
+function lbDraw(st, t, revealed, blind) {
+  lbDestroy();
+  const narrow = $("lbPrice").clientWidth < 560, show = narrow ? 60 : LB_SHOW;
+  const end = revealed ? t + LB_FUT : t, norm = blind ? 100 / st.c[t] : 1, up = cssVar("--up"), down = cssVar("--down");
+  const T = (i) => (blind ? LB_T0 + i * 86400 : st.d[i]);
+  const idx = new Map();
+  for (let i = 0; i <= end; i++) idx.set(blind ? T(i) : st.d[i], i);
+  const rel = (time) => { const i = idx.get(time); return i == null ? "" : i === t ? "決策日" : `${i > t ? "+" : ""}${i - t} 天`; };
+  const opts = (showTime) => {
+    const o = chartOptions(showTime);
+    if (blind) {
+      o.timeScale = { ...o.timeScale, tickMarkFormatter: (time) => rel(time) };
+      o.localization = { ...o.localization, timeFormatter: (time) => rel(time) };
+    }
+    return o;
   };
-  out.push(path(st.ma[5], YP, "lb-ma5"), path(st.ma[20], YP, "lb-ma20"), path(st.ma[60], YP, "lb-ma60"));
-  out.push(path(st.kd.j, YK, "lb-j"), path(st.kd.d, YK, "sp-d"), path(st.kd.k, YK, "sp-k"));
-  out.push(path(st.macd.macd, YM, "sp-d"), path(st.macd.dif, YM, "sp-k"));
-  if (revealed) out.push(`<line class="lb-now" x1="${X(t) + bw}" x2="${X(t) + bw}" y1="8" y2="${H - 8}"/><text class="sp-t" x="${X(t) + bw + 4}" y="20">決策日</text>`);
-  out.push(`<circle class="sp-last" cx="${X(t)}" cy="${YP(st.c[t])}" r="3"/>`);
-  for (let q = 0; q <= 2; q++) {
-    const v = lo + ((hi - lo) * q) / 2;
-    out.push(`<text class="sp-t" x="${W - R + 6}" y="${YP(v) + 3}">${fmtPx(v * norm)}</text>`);
+  const fade = (hex) => {
+    const h = hex.replace("#", ""), n = parseInt(h.length === 3 ? h.replace(/./g, "$&$&") : h, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, 0.45)`;
+  };
+  const price = LWC.createChart($("lbPrice"), opts(false));
+  const candle = price.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceLineVisible: false,
+    priceFormat: { type: "price", precision: 2, minMove: 0.01 } });
+  const bars = [];
+  for (let i = 0; i <= end; i++) {
+    const b = { time: T(i), open: st.o[i] * norm, high: st.h[i] * norm, low: st.l[i] * norm, close: st.c[i] * norm };
+    if (i > t) { const c = st.c[i] >= st.o[i] ? fade(up) : fade(down); Object.assign(b, { color: c, wickColor: c }); }
+    bars.push(b);
   }
-  out.push(`<text class="sp-t" x="${W - R + 6}" y="${YK(80) + 3}">80</text><text class="sp-t" x="${W - R + 6}" y="${YK(20) + 3}">20</text><text class="sp-t sp-lab" x="${L + 6}" y="${K.y0 + 6}">KD（藍 K、橘 D、粉 J）</text>`);
-  out.push(`<text class="sp-t sp-lab" x="${L + 6}" y="${Mp.y0 + 6}">MACD（藍 DIF、橘 MACD 線、柱狀體）</text><text class="sp-t sp-lab" x="${L + 6}" y="${P.y0 + 6}">均線：藍 5 日、綠 20 日、黃 60 日</text>`);
-  if (!blind) out.push(`<text class="sp-t" x="${L + 4}" y="${H - 1}">${st.d[s]}</text><text class="sp-t" x="${X(t)}" y="${H - 1}" text-anchor="middle">${st.d[t]}</text>`);
-  out.push("</svg>");
-  return out.join("");
+  candle.setData(bars);
+  candle.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.18 } });
+  const vol = price.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, color: cssVar("--vol"), priceLineVisible: false, lastValueVisible: false });
+  vol.setData(Array.from({ length: end + 1 }, (_, i) => ({ time: T(i), value: st.v[i] })));
+  price.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+  const line = (chart, arr, color, width = 1, scale = 1) => {
+    const s = chart.addLineSeries({ color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    s.setData(Array.from({ length: end + 1 }, (_, i) => (Number.isFinite(arr[i]) ? { time: T(i), value: arr[i] * scale } : { time: T(i) })));
+    return s;
+  };
+  line(price, st.ma[5], cssVar("--s1"), 1, norm);
+  line(price, st.ma[20], cssVar("--s3"), 1, norm);
+  line(price, st.ma[60], cssVar("--s4"), 1, norm);
+  if (revealed) candle.setMarkers([{ time: T(t), position: "aboveBar", color: cssVar("--ink-2"), shape: "arrowDown", text: "決策日" }]);
+
+  const kd = LWC.createChart($("lbKd"), opts(false));
+  const kS = line(kd, st.kd.k, cssVar("--s1"), 2);
+  line(kd, st.kd.d, cssVar("--s2"), 2);
+  line(kd, st.kd.j, cssVar("--s5"), 1);
+  for (const lvl of [20, 80]) kS.createPriceLine({ price: lvl, color: cssVar("--axis"), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: "" });
+
+  const mc = LWC.createChart($("lbMacd"), opts(true));
+  const osc = mc.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+  const scale = blind ? norm : 1;
+  osc.setData(Array.from({ length: end + 1 }, (_, i) => ({ time: T(i), value: st.macd.osc[i] * scale, color: st.macd.osc[i] >= 0 ? up : down })));
+  const difS = line(mc, st.macd.dif, cssVar("--s1"), 2, scale);
+  line(mc, st.macd.macd, cssVar("--s2"), 2, scale);
+
+  lbCharts = [
+    { chart: price, series: candle, value: (i) => st.c[i] * norm },
+    { chart: kd, series: kS, value: (i) => st.kd.k[i] },
+    { chart: mc, series: difS, value: (i) => st.macd.dif[i] * scale },
+  ];
+  const legend = (i) => {
+    if (i == null || i > end) i = t;
+    const chg = st.c[i] / st.c[i - 1] - 1;
+    $("lbLegend").innerHTML = `<span><b>${blind ? rel(T(i)) || "決策日" : st.d[i]}</b></span><span>開 ${num(st.o[i] * norm)}</span><span>高 ${num(st.h[i] * norm)}</span><span>低 ${num(st.l[i] * norm)}</span>`
+      + `<span>收 <b>${num(st.c[i] * norm)}</b> <span class="${chg >= 0 ? "pos" : "neg"}">${spct(chg, 2)}</span></span>`
+      + `<span>K <b>${num(st.kd.k[i], 0)}</b> D <b>${num(st.kd.d[i], 0)}</b> J ${num(st.kd.j[i], 0)}</span><span>DIF ${num(st.macd.dif[i] * scale)} MACD ${num(st.macd.macd[i] * scale)}</span>`
+      + `<span class="muted">均線：藍 5 日・綠 20 日・黃 60 日</span>`;
+  };
+  legend(t);
+
+  // the "?" panel over the empty space after the decision day, kept in place while scrolling / zooming
+  const fut = $("lbFuture");
+  const place = () => {
+    if (revealed) { fut.hidden = true; return; }
+    const ts = price.timeScale(), a = ts.logicalToCoordinate(t), b = ts.logicalToCoordinate(t + 1);
+    const x = a == null || b == null ? null : (a + b) / 2, w = $("lbPrice").clientWidth - price.priceScale("right").width();
+    fut.hidden = x == null || x >= w;
+    if (!fut.hidden) { fut.style.left = `${Math.max(0, x)}px`; fut.style.width = `${w - Math.max(0, x)}px`; }
+  };
+  let syncing = false;
+  for (const c of lbCharts) {
+    c.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+      if (syncing || !r) return;
+      syncing = true;
+      for (const o of lbCharts) if (o !== c) o.chart.timeScale().setVisibleLogicalRange(r);
+      syncing = false;
+      place();
+    });
+    c.chart.subscribeCrosshairMove((param) => {
+      if (syncing) return;
+      syncing = true;
+      const i = param.time != null ? idx.get(param.time) : undefined;
+      for (const o of lbCharts) {
+        if (o === c) continue;
+        if (i === undefined) o.chart.clearCrosshairPosition();
+        else o.chart.setCrosshairPosition(o.value(i), param.time, o.series);
+      }
+      legend(i);
+      syncing = false;
+    });
+  }
+  lbView = { t, show, end, set: (from, to) => price.timeScale().setVisibleLogicalRange({ from, to }) };
+  lbZoom("recent");
+  // autoSize sizes the charts after layout, which resets the range: apply it again once they have their width
+  setTimeout(() => { lbZoom("recent"); place(); }, 80);
+}
+
+function lbZoom(how) {
+  if (!lbView || !lbCharts.length) return;
+  const ts = lbCharts[0].chart.timeScale(), r = ts.getVisibleLogicalRange(), { t, show } = lbView;
+  const right = t + LB_FUT + 2;
+  if (how === "recent") return lbView.set(t - show, right);
+  if (how === "all") return lbView.set(0, right);
+  if (!r) return;
+  const mid = (r.from + r.to) / 2, half = ((r.to - r.from) / 2) * (how === "in" ? 0.6 : 1.6);
+  lbView.set(Math.max(-5, mid - half), mid + half);
 }
 
 async function lbNew() {
@@ -882,7 +965,7 @@ function lbRender() {
   const { st, t } = c, a = c.answered, blind = lbState.blind && !a;
   $("lbHead").innerHTML = blind ? `<b>第 ${lbData.length + 1} 題</b><span class="muted">股票、日期與價格已隱藏（價格以決策日收盤 = 100 表示）</span>`
     : `<b>${st.code} ${esc(st.name)}</b><span class="muted">決策日 ${st.d[t]}・收盤 ${fmtPx(st.c[t])}</span><a class="link-btn" href="#/stock/${st.code}?p=custom&from=${st.d[Math.max(0, t - 250)]}&to=${st.d[Math.min(st.d.length - 1, t + 60)]}">在個股頁看前後走勢</a>`;
-  $("lbChart").innerHTML = lbChart(st, t, !!a, lbState.blind && !a, $("lbChart").clientWidth < 560);
+  lbDraw(st, t, !!a, lbState.blind && !a);
   $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.disabled = !!a));
   $("lbNext").hidden = !a;
   $("lbSkip").hidden = !!a;
@@ -943,6 +1026,7 @@ async function renderLabel() {
     $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.onclick = () => lbAnswer(b.dataset.lb)));
     $("lbNext").onclick = async () => { await lbNew(); lbRender(); lbRecent(); };
     $("lbSkip").onclick = async () => { await lbNew(); lbRender(); };
+    document.querySelectorAll("[data-z]").forEach((b) => (b.onclick = () => lbZoom(b.dataset.z)));
     $("lbExport").onclick = () => {
       const blob = new Blob([JSON.stringify({ version: 1, features: LB_FEATS, labels: lbData }, null, 1)], { type: "application/json" });
       const a = document.createElement("a");
@@ -1638,6 +1722,7 @@ function initTheme() {
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem("theme", next); } catch {}
     if (state.tab === "stock") renderStock();
+    if (state.tab === "label") lbRender();
   };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.tab === "stock") renderStock(); });
 }

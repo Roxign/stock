@@ -368,6 +368,16 @@ svg.spark { display: block; overflow: visible; }
 .btn.lb-sell:hover { background: color-mix(in oklab, var(--down) 12%, transparent); }
 kbd { font: inherit; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
 .lb-result { margin-top: 10px; }
+.lb-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 2px; }
+.lb-tools .btn { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+.lb-wrap { position: relative; }
+.lb-price { height: 320px; }
+.lb-ind { height: 110px; }
+.lb-future { position: absolute; top: 0; bottom: 26px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: color-mix(in oklab, var(--surface-2) 75%, transparent); border-left: 2px dashed var(--axis); pointer-events: none; color: var(--muted); z-index: 5; }
+.lb-future b { font-size: 34px; font-weight: 500; }
+.lb-future small { font-size: 12px; }
+@media (max-width: 640px) { .lb-price { height: 260px; } .lb-ind { height: 96px; } }
 table.data.bands th, table.data.bands td { white-space: normal; }
 @media (max-width: 900px) {
   table.data.low thead { display: none; }
