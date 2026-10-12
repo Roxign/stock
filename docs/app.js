@@ -704,23 +704,28 @@ async function renderStockSignals(st) {
 }
 
 // ---------- blind trading replay (盲測交易回放) ----------
-// A random stock and period, revealed one session at a time. The viewer may wait, buy or sell whenever they like;
-// orders fill at the next open (as in the backtests) and positions are held as long as the viewer wants. Every
-// session the viewer saw is recorded with its features and whether they acted, which trains two "twin" models:
-// when they buy while flat, and when they sell while holding. A session's predictions come from models trained on
-// earlier sessions only, so their scores are out of sample.
+// A random stock and period, revealed one session at a time. The viewer may wait, buy or sell whenever they like
+// (selling while flat opens a short, buying while short covers it); orders fill at the next open (as in the
+// backtests) and positions are held as long as the viewer wants. Every session the viewer saw is recorded with its
+// features and what they did, which trains the "twin" models below. A session's predictions come from models
+// trained on earlier sessions only, so their scores are out of sample.
 const RP_KEY = "replay_v1", RP_SHOW = 120, RP_AFTER = 20;
 const RP_LENS = [[120, "最長 120 天（約半年）"], [250, "最長 250 天（約一年）"], [500, "最長 500 天（約兩年）"]];
 const RP_FEATS = ["K 值", "D 值", "J 值", "K − D", "K 一日變化", "DIF／股價", "MACD 線／股價", "柱狀體／股價", "柱狀體一日變化",
   "距週線", "距月線", "距季線", "距年線", "5 日漲跌", "20 日漲跌", "60 日漲跌", "20 日波動度", "60 日區間位置", "量比", "高檔鈍化天數", "低檔鈍化天數"];
 const RP_HOLD = ["持有報酬", "持有天數"];
-const rp = { blind: true, uni: "all", len: 250, g: null, models: { in: null, out: null }, charts: null };
+// twins: [key, position (0 flat, 1 long, -1 short), action that counts (day.a), verb, title, what a day is]
+const RP_MODELS = [["in", 0, 1, "買進", "進場分身（買進）", "空手"], ["short", 0, -1, "放空", "進場分身（放空）", "空手"],
+  ["out", 1, 1, "賣出", "出場分身（賣出多單）", "持有多單"], ["cover", -1, 1, "回補", "出場分身（回補空單）", "放空"]];
+const rp = { blind: true, uni: "all", len: 250, g: null, models: {}, charts: null };
 let rpData = { version: 1, sessions: [] };
 try { const x = JSON.parse(localStorage.getItem(RP_KEY)); if (x?.sessions) rpData = x; } catch {}
 const rpSave = () => {
   try { localStorage.setItem(RP_KEY, JSON.stringify(rpData)); } catch { alert("瀏覽器空間不足，請先「匯出紀錄」備份。"); }
 };
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
+// net trade return after fees and tax, as in engine.js (shorts also pay the 融券 fee)
+const rpRet = (side, p0, p1, f) => (side > 0 ? (p1 * (1 - f.sell)) / (p0 * (1 + f.buy)) : (p0 * (1 - f.sell - (f.short || 0))) / (p1 * (1 + f.buy))) - 1;
 
 function rpFeatures(st, t) {
   const { c, v } = st, k = st.kd.k, d = st.kd.d, j = st.kd.j, dif = st.macd.dif, sig = st.macd.macd, osc = st.macd.osc, ma = st.ma;
@@ -765,10 +770,9 @@ const rpX = (d) => (d.s ? [...d.f, d.u, d.h / 100] : d.f);
 
 function rpTrain() {
   const days = rpData.sessions.flatMap((s) => s.days);
-  for (const [key, state] of [["in", 0], ["out", 1]]) {
-    const rows = days.filter((d) => d.s === state);
-    const pos = rows.filter((d) => d.a).length;
-    rp.models[key] = pos >= 4 && rows.length - pos >= 30 ? rpFit(rows.map(rpX), rows.map((d) => d.a), rows.map((d) => (d.k ? 0.5 : 1))) : null;
+  for (const [key, state, act] of RP_MODELS) {
+    const rows = days.filter((d) => d.s === state), y = rows.map((d) => (d.a === act ? 1 : 0)), pos = y.filter(Boolean).length;
+    rp.models[key] = pos >= 4 && rows.length - pos >= 30 ? rpFit(rows.map(rpX), y, rows.map((d) => (d.k ? 0.5 : 1))) : null;
   }
 }
 
@@ -911,18 +915,18 @@ function rpZoom(how) {
 function rpMarkers() {
   const g = rp.g, C = rp.charts;
   if (!g || !C) return;
-  const up = cssVar("--up"), down = cssVar("--down"), m = [];
-  for (const t of g.trades) {
-    m.push({ time: g.T(t.i0), position: "belowBar", color: up, shape: "arrowUp", text: "買" });
-    if (t.i1 != null && !t.open) m.push({ time: g.T(t.i1), position: "aboveBar", color: down, shape: "arrowDown", text: "賣" });
-  }
-  if (g.entry) m.push({ time: g.T(g.entry.i), position: "belowBar", color: up, shape: "arrowUp", text: "買" });
-  if (g.ended && g.twin) {
-    for (const t of g.twin.trades) {
-      m.push({ time: g.T(t.i0), position: "belowBar", color: cssVar("--s7"), shape: "circle", text: "分身買" });
-      if (t.i1 != null && !t.open) m.push({ time: g.T(t.i1), position: "aboveBar", color: cssVar("--s7"), shape: "circle", text: "分身賣" });
-    }
-  }
+  const up = cssVar("--up"), down = cssVar("--down"), violet = cssVar("--s7"), m = [];
+  // buys (long entry, short cover) point up under the bar; sells (long exit, short entry) point down above it
+  const mark = (i, buy, text, twin) => m.push({ time: g.T(i), position: buy ? "belowBar" : "aboveBar", color: twin ? violet : buy ? up : down,
+    shape: twin ? "circle" : buy ? "arrowUp" : "arrowDown", text: (twin ? "分身" : "") + text });
+  const trade = (t, twin) => {
+    const long = t.side !== -1;
+    mark(t.i0, long, long ? "買" : "空", twin);
+    if (t.i1 != null && !t.open) mark(t.i1, !long, long ? "賣" : "補", twin);
+  };
+  g.trades.forEach((t) => trade(t, false));
+  if (g.entry) trade({ side: g.entry.side, i0: g.entry.i }, false);
+  if (g.ended && g.twin) g.twin.trades.forEach((t) => trade(t, true));
   m.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
   C.candle.setMarkers(m);
 }
@@ -938,7 +942,7 @@ async function rpNewGame() {
     if (hi <= lo) continue;
     const s = lo + Math.floor(Math.random() * (hi - lo));
     rp.g = { st, s, cur: s, max: Math.min(s + rp.len, n - 2), blind: rp.blind, entry: null, trades: [], days: [], ended: false,
-      fees: st.fees || { buy: ENGINE.buyFee, sell: ENGINE.sellFee }, models: { in: rp.models.in, out: rp.models.out } };
+      fees: st.fees || { buy: ENGINE.buyFee, sell: ENGINE.sellFee }, models: { ...rp.models } };
     break;
   }
   if (state.tab !== "label" || !rp.g) return;
@@ -947,12 +951,15 @@ async function rpNewGame() {
   rpRender();
 }
 
-function rpRecordDay(acted, skipped) {
-  const g = rp.g, i = g.cur, st = g.st, f = rpFeatures(st, i), holding = !!g.entry;
-  const d = { i, s: holding ? 1 : 0, a: acted ? 1 : 0, k: skipped ? 1 : 0, f };
-  if (holding) { d.u = r4(st.c[i] / g.entry.px - 1); d.h = i - g.entry.i + 1; }
-  const m = holding ? g.models.out : g.models.in;
-  if (m) d.p = r4(rpProb(m, rpX(d)));
+// One day as the viewer saw it: s = position (0 flat, 1 long, -1 short); a = what they did (0 nothing, 1 buy or close,
+// -1 open a short); u, h = open return and days held; p = the twins' probabilities, from earlier games only.
+function rpRecordDay(act, skipped) {
+  const g = rp.g, i = g.cur, st = g.st, f = rpFeatures(st, i), side = g.entry?.side || 0;
+  const d = { i, s: side, a: act, k: skipped ? 1 : 0, f };
+  if (side) { d.u = r4(side * (st.c[i] / g.entry.px - 1)); d.h = i - g.entry.i + 1; }
+  const p = {};
+  for (const [key, state] of RP_MODELS) if (state === side && g.models[key]) p[key] = r4(rpProb(g.models[key], rpX(d)));
+  if (Object.keys(p).length) d.p = p;
   g.days.push(d);
 }
 
@@ -971,17 +978,15 @@ function rpAdvance(n) {
 function rpAct(kind) {
   const g = rp.g;
   if (!g || g.ended) return;
-  const st = g.st, holding = !!g.entry;
-  if (kind === "buy" && !holding) {
-    rpRecordDay(true, false);
-    g.entry = { i: g.cur + 1, px: st.o[g.cur + 1] };
-    rpAdvance(1);
-    if (!g.ended) rpMarkers();
-  } else if (kind === "sell" && holding) {
-    rpRecordDay(true, false);
-    const px = st.o[g.cur + 1];
-    g.trades.push({ i0: g.entry.i, p0: g.entry.px, i1: g.cur + 1, p1: px, r: r4((px * (1 - g.fees.sell)) / (g.entry.px * (1 + g.fees.buy)) - 1) });
-    g.entry = null;
+  const st = g.st, side = g.entry?.side || 0, nx = g.cur + 1;
+  if (kind === "buy" || kind === "sell") {
+    const dir = kind === "buy" ? 1 : -1;
+    if (side === dir) return; // already long (or short)
+    rpRecordDay(side ? 1 : dir, false);
+    if (side) { // buying covers a short, selling closes a long
+      g.trades.push({ side, i0: g.entry.i, p0: g.entry.px, i1: nx, p1: st.o[nx], r: r4(rpRet(side, g.entry.px, st.o[nx], g.fees)) });
+      g.entry = null;
+    } else g.entry = { i: nx, px: st.o[nx], side: dir };
     rpAdvance(1);
     if (!g.ended) rpMarkers();
   } else if (kind === "next" || kind === "ff5" || kind === "ff20") {
@@ -989,7 +994,7 @@ function rpAct(kind) {
     for (let k = 0; k < n && g.cur + k < g.max; k++) {
       const save = g.cur;
       g.cur = save + k;
-      rpRecordDay(false, k > 0);
+      rpRecordDay(0, k > 0);
       g.cur = save;
     }
     rpAdvance(n);
@@ -998,18 +1003,25 @@ function rpAct(kind) {
 
 // What the twins would have done in this game (orders when their probability passes one half).
 function rpTwinPlay(g) {
-  if (!g.models.in) return null;
+  const M = g.models;
+  if (!M.in && !M.short) return null;
   const st = g.st, trades = [];
   let entry = null;
+  const close = (i1, p1, open) => {
+    trades.push({ side: entry.side, i0: entry.i, p0: entry.px, i1, p1, r: rpRet(entry.side, entry.px, p1, g.fees), ...(open ? { open } : {}) });
+    entry = null;
+  };
   for (let i = g.s; i < g.cur; i++) {
     const f = rpFeatures(st, i);
-    if (!entry && rpProb(g.models.in, f) > 0.5) entry = { i: i + 1, px: st.o[i + 1] };
-    else if (entry && g.models.out && rpProb(g.models.out, [...f, st.c[i] / entry.px - 1, (i - entry.i + 1) / 100]) > 0.5) {
-      trades.push({ i0: entry.i, p0: entry.px, i1: i + 1, p1: st.o[i + 1], r: (st.o[i + 1] * (1 - g.fees.sell)) / (entry.px * (1 + g.fees.buy)) - 1 });
-      entry = null;
+    if (!entry) {
+      const pb = M.in ? rpProb(M.in, f) : 0, ps = M.short ? rpProb(M.short, f) : 0;
+      if (Math.max(pb, ps) > 0.5) entry = { i: i + 1, px: st.o[i + 1], side: pb >= ps ? 1 : -1 };
+    } else {
+      const m = entry.side > 0 ? M.out : M.cover;
+      if (m && rpProb(m, [...f, entry.side * (st.c[i] / entry.px - 1), (i - entry.i + 1) / 100]) > 0.5) close(i + 1, st.o[i + 1]);
     }
   }
-  if (entry) trades.push({ i0: entry.i, p0: entry.px, i1: g.cur, p1: st.c[g.cur], r: (st.c[g.cur] * (1 - g.fees.sell)) / (entry.px * (1 + g.fees.buy)) - 1, open: true });
+  if (entry) close(g.cur, st.c[g.cur], true);
   return { trades, ret: trades.reduce((a, t) => a * (1 + t.r), 1) - 1 };
 }
 
@@ -1017,9 +1029,9 @@ function rpEnd(auto) {
   const g = rp.g;
   if (!g || g.ended) return;
   const st = g.st;
-  if (g.entry) {
-    const px = st.c[g.cur];
-    g.trades.push({ i0: g.entry.i, p0: g.entry.px, i1: g.cur, p1: px, r: r4((px * (1 - g.fees.sell)) / (g.entry.px * (1 + g.fees.buy)) - 1), open: true });
+  if (g.entry) { // still open: closed at the last close
+    const { side, i, px } = g.entry;
+    g.trades.push({ side, i0: i, p0: px, i1: g.cur, p1: st.c[g.cur], r: r4(rpRet(side, px, st.c[g.cur], g.fees)), open: true });
     g.entry = null;
   }
   g.ended = true;
@@ -1048,22 +1060,25 @@ function rpRebuild() {
 function rpRender() {
   const g = rp.g;
   if (!g) return;
-  const st = g.st, day = g.cur - g.s, holding = !!g.entry;
-  const unreal = holding ? st.c[g.cur] / g.entry.px - 1 : null;
+  const st = g.st, day = g.cur - g.s, side = g.entry?.side || 0;
+  const unreal = side ? rpRet(side, g.entry.px, st.c[g.cur], g.fees) : null;
   const closed = g.trades.reduce((a, t) => a * (1 + t.r), 1) - 1;
   const name = g.blind && !g.ended ? "（股票、日期與價格已隱藏，價格以起點收盤 = 100）" : `${st.code} ${esc(st.name)}　${st.d[g.s]} ～ ${st.d[g.cur]}`;
-  $("rpStatus").innerHTML = `<span><b>第 ${day} 天</b>／最長 ${g.max - g.s} 天</span><span>${holding ? `部位：<b class="pos">持有中</b>（第 ${g.cur - g.entry.i + 1} 天，<span class="${unreal >= 0 ? "pos" : "neg"}">${spct(unreal)}</span>）` : "部位：<b>空手</b>"}</span>`
+  const pos = side ? `部位：<b class="${side > 0 ? "pos" : "neg"}">${side > 0 ? "持有多單" : "放空中"}</b>（第 ${g.cur - g.entry.i + 1} 天，含費用 <span class="${unreal >= 0 ? "pos" : "neg"}">${spct(unreal)}</span>）` : "部位：<b>空手</b>";
+  $("rpStatus").innerHTML = `<span><b>第 ${day} 天</b>／最長 ${g.max - g.s} 天</span><span>${pos}</span>`
     + `<span>已實現 ${g.trades.length} 筆，<span class="${closed >= 0 ? "pos" : "neg"}">${spct(closed)}</span></span><span class="muted">${name}</span>`;
-  $("rpBuy").disabled = g.ended || holding;
-  $("rpSell").disabled = g.ended || !holding;
+  $("rpBuy").disabled = g.ended || side > 0;
+  $("rpSell").disabled = g.ended || side < 0;
+  $("rpBuy").firstChild.textContent = side < 0 ? "買進回補 " : "買進 ";
+  $("rpSell").firstChild.textContent = side > 0 ? "賣出 " : "賣出放空 ";
   for (const id of ["rpNext", "rpFF5", "rpFF20", "rpEnd"]) $(id).disabled = g.ended;
   const res = $("rpResult");
   res.hidden = !g.ended;
   if (!g.ended) return;
-  const rows = g.trades.map((t, k) => `<tr><td>${k + 1}</td><td>${st.d[t.i0]}</td><td>${num(t.p0)}</td><td>${t.open ? "結束時仍持有" : st.d[t.i1]}</td><td>${num(t.p1)}</td><td class="${t.r >= 0 ? "pos" : "neg"}">${spct(t.r)}</td><td>${t.i1 - t.i0} 天</td></tr>`).join("");
+  const rows = g.trades.map((t, k) => `<tr><td>${k + 1} ${t.side === -1 ? '<span class="neg">空</span>' : '<span class="pos">多</span>'}</td><td>${st.d[t.i0]}</td><td>${num(t.p0)}</td><td>${t.open ? "結束時仍持有" : st.d[t.i1]}</td><td>${num(t.p1)}</td><td class="${t.r >= 0 ? "pos" : "neg"}">${spct(t.r)}</td><td>${t.i1 - t.i0} 天</td></tr>`).join("");
   res.innerHTML = `<strong>本局結束：${st.code} ${esc(st.name)}，${st.d[g.s]} ～ ${st.d[g.cur]}（${g.cur - g.s} 個交易日）</strong><br>`
     + `你的報酬 <b class="${g.ret >= 0 ? "pos" : "neg"}">${spct(g.ret)}</b>，同期間買進持有 <span class="${g.bh >= 0 ? "pos" : "neg"}">${spct(g.bh)}</span>（${g.ret >= g.bh ? "贏過" : "輸給"}買進持有 ${pct(Math.abs(g.ret - g.bh))}）`
-    + (g.twin ? `；你的分身（只用之前幾局學到的）${spct(g.twin.ret)}，圖上紫色圓點是它的買賣點` : "") + `。含手續費與交易稅；圖上淡色 K 線是本局結束後的 20 天。`
+    + (g.twin ? `；你的分身（只用之前幾局學到的）${spct(g.twin.ret)}，圖上紫色圓點是它的買賣點` : "") + `。含手續費、交易稅（放空另含融券費）；圖上淡色 K 線是本局結束後的 20 天。`
     + (rows ? `<div class="table-wrap fit"><table class="data"><thead><tr><th>#</th><th>進場</th><th>價格</th><th>出場</th><th>價格</th><th>報酬</th><th>持有</th></tr></thead><tbody>${rows}</tbody></table></div>` : "<br>這一局沒有交易。")
     + `<div class="actions"><button type="button" class="btn primary" data-new>下一局 <kbd>Enter</kbd></button></div>`;
   res.querySelector("[data-new]").onclick = rpNewGame;
@@ -1073,29 +1088,31 @@ function rpSide() {
   const S_ = rpData.sessions, n = S_.length, trades = S_.flatMap((s) => s.trades);
   $("rpCount").textContent = `已完成 ${n} 局（存在這台裝置）`;
   if (!n) {
-    $("rpStats").innerHTML = `<p class="note">還沒有完成的一局。按「下一天」「快轉」往前走，覺得該進場就按「買進」、該出場就按「賣出」，最後按「結束本局」。</p>`;
+    $("rpStats").innerHTML = `<p class="note">還沒有完成的一局。按「下一天」「快轉」往前走，覺得該進場就按「買進」（空手時按「賣出」就是放空），該出場就反向按一次，最後按「結束本局」。</p>`;
   } else {
     const ex = S_.map((s) => s.ret - s.bh), wins = trades.filter((t) => t.r > 0).length, hold = trades.map((t) => t.i1 - t.i0);
     const avg = mean(S_.map((s) => s.ret)), row = (label, value, note) => `<tr><td>${label}</td><td class="wrap">${value}<br><small class="muted">${note}</small></td></tr>`;
     $("rpStats").innerHTML = `<table class="data"><tbody>`
       + row("每局平均報酬", `<b class="${avg >= 0 ? "pos" : "neg"}">${spct(avg)}</b>`, `同期間買進持有 ${spct(mean(S_.map((s) => s.bh)))}`)
       + row("贏過買進持有", `${ex.filter((x) => x > 0).length}／${n} 局`, `平均差距 ${spct(mean(ex))}`)
-      + row("交易筆數", trades.length, `勝率 ${trades.length ? pct(wins / trades.length, 0) : "—"}、平均每筆 ${trades.length ? spct(mean(trades.map((t) => t.r))) : "—"}`)
+      + row("交易筆數", `${trades.length}（多 ${trades.filter((t) => t.side !== -1).length}、空 ${trades.filter((t) => t.side === -1).length}）`, `勝率 ${trades.length ? pct(wins / trades.length, 0) : "—"}、平均每筆 ${trades.length ? spct(mean(trades.map((t) => t.r))) : "—"}`)
       + row("平均持有", hold.length ? `${Math.round(mean(hold))} 天` : "—", hold.length ? `最短 ${Math.min(...hold)}、最長 ${Math.max(...hold)} 天` : "")
       + `</tbody></table>`;
   }
-  const days = S_.flatMap((s) => s.days), buys = days.filter((d) => d.s === 0 && d.a).length, sells = days.filter((d) => d.s === 1 && d.a).length;
-  const mi = rp.models.in, mo = rp.models.out;
-  if (!mi) {
-    $("rpModel").innerHTML = `<p class="note">目前記錄了 ${days.length} 天、其中買進 ${buys} 次、賣出 ${sells} 次。累積到買進 4 次以上（以及 30 個空手觀望日）就會訓練「進場分身」，賣出 4 次以上就會訓練「出場分身」；之後每結束一局重新訓練一次。</p>`;
-    return;
-  }
-  const aucIn = rpAuc(days.filter((d) => d.s === 0 && d.p != null).map((d) => [d.p, d.a]));
-  const aucOut = rpAuc(days.filter((d) => d.s === 1 && d.p != null).map((d) => [d.p, d.a]));
+  const days = S_.flatMap((s) => s.days), count = (state, act) => days.filter((d) => d.s === state && d.a === act).length;
   const tend = (m, names) => names.map((nm, i) => [nm, m.W[i]]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3).map(([nm, w]) => `${nm}${w > 0 ? "高" : "低"}`).join("、");
+  const done = [], waiting = [];
+  for (const [key, state, act, verb, title, unit] of RP_MODELS) {
+    const m = rp.models[key];
+    if (!m) { waiting.push(`${verb} ${count(state, act)}／4 次`); continue; }
+    const auc = rpAuc(days.filter((d) => d.s === state && d.p?.[key] != null).map((d) => [d.p[key], d.a === act]));
+    done.push(`<p><b>${title}</b>：用 ${m.n} 個${unit}日（其中 ${m.pos} 次${verb}）訓練，你傾向在「${tend(m, state ? [...RP_FEATS, ...RP_HOLD] : RP_FEATS)}」時${verb}。`
+      + `${auc != null ? `在它沒看過的局裡 AUC <b>${num(auc)}</b>（0.5 = 亂猜、1 = 全對）。` : ""}</p>`);
+  }
+  const wait = waiting.length ? `<p class="note">每種動作累積 4 次以上（以及 30 個沒動作的日子）才會訓練對應的分身，之後每結束一局重新訓練。目前：${waiting.join("、")}。</p>` : "";
+  if (!done.length) { $("rpModel").innerHTML = `<p class="note">目前記錄了 ${days.length} 天。</p>${wait}`; return; }
   const twinS = S_.filter((s) => s.twin != null);
-  $("rpModel").innerHTML = `<p>進場分身：用 ${mi.n} 個空手日（其中 ${mi.pos} 次買進）訓練，你傾向在「${tend(mi, RP_FEATS)}」時買進。${aucIn != null ? `在它沒看過的局裡，辨識你買進日的 AUC <b>${num(aucIn)}</b>（0.5 = 亂猜、1 = 全對）。` : ""}</p>`
-    + (mo ? `<p>出場分身：用 ${mo.n} 個持有日（其中 ${mo.pos} 次賣出）訓練，你傾向在「${tend(mo, [...RP_FEATS, ...RP_HOLD])}」時賣出。${aucOut != null ? `沒看過的局裡 AUC <b>${num(aucOut)}</b>。` : ""}</p>` : `<p class="note">出場分身：賣出 4 次以上才會訓練（目前 ${sells} 次）。</p>`)
+  $("rpModel").innerHTML = done.join("") + wait
     + (twinS.length ? `<p class="note">分身在 ${twinS.length} 局（只用之前的局學到的）平均報酬 ${spct(mean(twinS.map((s) => s.twin)))}；你在同樣這些局 ${spct(mean(twinS.map((s) => s.ret)))}，買進持有 ${spct(mean(twinS.map((s) => s.bh)))}。</p>` : "")
     + `<p class="note">累積 30 局以上後，按「匯出紀錄」把檔案給我，我會用 Python 做完整驗證；分身如果真的學到東西，就變成正式策略、每天出訊號。</p>`;
 }

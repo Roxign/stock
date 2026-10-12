@@ -6,10 +6,10 @@
   <title>KDJ／MACD 高低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=14"></script>
+  <script type="module" src="app.js?v=15"></script>
 </head>
 <body>
   <header class="top">
@@ -266,7 +266,7 @@
         <h2>盲測交易回放：一天一天往前走，自己決定何時買、何時賣</h2>
         <span class="muted" id="rpCount"></span>
       </div>
-      <p class="note">隨機抽一檔股票和一段期間，從起點開始一天一天揭曉，你只看得到今天以前的走勢。不需要每天動作：覺得該進場就按「買進」、該出場就按「賣出」，其餘時間按「下一天」或快轉觀望；買賣都在隔天開盤成交（和回測一樣），持有多久由你決定。每一天你「有沒有動作」都會記錄下來，訓練你的進場與出場分身。</p>
+      <p class="note">隨機抽一檔股票和一段期間，從起點開始一天一天揭曉，你只看得到今天以前的走勢。不需要每天動作：看漲就按「買進」、看跌就按「賣出」——空手時賣出就是<strong>放空</strong>，不必先買；之後反向按一次就出場（賣出多單或買進回補），其餘時間按「下一天」或快轉觀望；買賣都在隔天開盤成交（和回測一樣），持有多久由你決定。每一天你「有沒有動作」都會記錄下來，訓練你的進場與出場分身。</p>
       <div class="filters slim">
         <button type="button" class="btn primary" id="rpNew">開始新的一局</button>
         <label class="check"><input type="checkbox" id="rpBlind" checked> 隱藏股票名稱、日期與價格</label>
