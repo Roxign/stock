@@ -6,10 +6,10 @@
   <title>KDJ／MACD 高低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=14">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=13"></script>
+  <script type="module" src="app.js?v=14"></script>
 </head>
 <body>
   <header class="top">
@@ -23,7 +23,7 @@
       <a href="#/overview" data-tab="overview">總覽</a>
       <a href="#/stock" data-tab="stock">個股回測</a>
       <a href="#/lab" data-tab="lab">規則實驗室</a>
-      <a href="#/label" data-tab="label">盲測標註</a>
+      <a href="#/label" data-tab="label">盲測回放</a>
       <a href="#/strategies" data-tab="strategies">策略說明</a>
     </nav>
     <button id="themeBtn" class="icon-btn" type="button" aria-label="切換深色／淺色">
@@ -263,17 +263,18 @@
 
     <section id="view-label" hidden>
       <div class="stock-head">
-        <h2>盲測標註：看不到未來時，你會買還是賣？</h2>
-        <span class="muted" id="lbCount"></span>
+        <h2>盲測交易回放：一天一天往前走，自己決定何時買、何時賣</h2>
+        <span class="muted" id="rpCount"></span>
       </div>
-      <p class="note">隨機抽一檔股票的某一天，只顯示到那天為止的 120 個交易日。判斷<strong>明天開盤</strong>要買進、賣出（或放空）還是不動作，按下後才揭曉接下來 20 個交易日。標註存在這台裝置的瀏覽器裡（可匯出、匯入）；標得越多，「你的分身」模型越能學會你的判斷方式。</p>
+      <p class="note">隨機抽一檔股票和一段期間，從起點開始一天一天揭曉，你只看得到今天以前的走勢。不需要每天動作：覺得該進場就按「買進」、該出場就按「賣出」，其餘時間按「下一天」或快轉觀望；買賣都在隔天開盤成交（和回測一樣），持有多久由你決定。每一天你「有沒有動作」都會記錄下來，訓練你的進場與出場分身。</p>
       <div class="filters slim">
-        <label class="check"><input type="checkbox" id="lbBlind" checked> 隱藏股票名稱、日期與價格</label>
-        <label class="field-row">標的 <select id="lbUni"></select></label>
-        <label class="field-row">出題 <select id="lbFocus"><option value="mix">一半隨機、一半在高低檔</option><option value="rand">完全隨機</option><option value="extreme">只出 KD 高低檔</option></select></label>
+        <button type="button" class="btn primary" id="rpNew">開始新的一局</button>
+        <label class="check"><input type="checkbox" id="rpBlind" checked> 隱藏股票名稱、日期與價格</label>
+        <label class="field-row">標的 <select id="rpUni"></select></label>
+        <label class="field-row">長度 <select id="rpLen"></select></label>
       </div>
       <div class="panel lb-panel">
-        <div class="pane-legend" id="lbHead"></div>
+        <div class="pane-legend" id="rpStatus"></div>
         <div class="lb-tools">
           <button type="button" class="btn" data-z="in" aria-label="放大">＋ 放大</button>
           <button type="button" class="btn" data-z="out" aria-label="縮小">－ 縮小</button>
@@ -282,29 +283,30 @@
           <span class="muted">拖曳圖表可往回看歷史，滾輪或兩指可縮放</span>
         </div>
         <div class="pane-legend" id="lbLegend"></div>
-        <div class="lb-wrap"><div class="chart lb-price" id="lbPrice"></div><div class="lb-future" id="lbFuture" hidden><b>？</b><small>接下來 20 天</small></div></div>
+        <div class="lb-wrap"><div class="chart lb-price" id="lbPrice"></div><div class="lb-future" id="lbFuture" hidden><b>？</b><small>未來</small></div></div>
         <div class="chart lb-ind" id="lbKd"></div>
         <div class="chart lb-ind" id="lbMacd"></div>
-        <div class="lb-actions" id="lbActions">
-          <button type="button" class="btn lb-buy" data-lb="buy">買進 <kbd>B</kbd></button>
-          <button type="button" class="btn lb-hold" data-lb="hold">不動作 <kbd>H</kbd></button>
-          <button type="button" class="btn lb-sell" data-lb="sell">賣出／放空 <kbd>S</kbd></button>
-          <button type="button" class="btn primary" id="lbNext" hidden>下一題 <kbd>Enter</kbd></button>
-          <button type="button" class="btn" id="lbSkip">換一題</button>
+        <div class="lb-actions">
+          <button type="button" class="btn lb-buy" id="rpBuy">買進 <kbd>B</kbd></button>
+          <button type="button" class="btn lb-sell" id="rpSell">賣出 <kbd>S</kbd></button>
+          <button type="button" class="btn primary" id="rpNext">下一天 <kbd>→</kbd></button>
+          <button type="button" class="btn" id="rpFF5">快轉 5 天 <kbd>F</kbd></button>
+          <button type="button" class="btn" id="rpFF20">快轉 20 天 <kbd>G</kbd></button>
+          <button type="button" class="btn" id="rpEnd">結束本局 <kbd>E</kbd></button>
         </div>
-        <p class="callout lb-result" id="lbResult" hidden></p>
+        <div class="callout lb-result" id="rpResult" hidden></div>
       </div>
       <div class="lab-grid">
-        <section class="panel lab-side"><h3>你的標註成績</h3><div id="lbStats"></div></section>
-        <section class="panel lab-side"><h3>你的分身模型（邊標註邊訓練）</h3><div id="lbModel"></div></section>
+        <section class="panel lab-side"><h3>你的成績</h3><div id="rpStats"></div></section>
+        <section class="panel lab-side"><h3>你的分身（每結束一局重新訓練）</h3><div id="rpModel"></div></section>
       </div>
       <details class="trades">
-        <summary>最近的標註與資料管理</summary>
-        <div id="lbRecent"></div>
+        <summary>最近的局與資料管理</summary>
+        <div id="rpList"></div>
         <div class="actions">
-          <button type="button" class="btn" id="lbExport">匯出標註（JSON）</button>
-          <label class="btn">匯入標註<input type="file" id="lbImport" accept=".json,application/json" hidden></label>
-          <button type="button" class="btn" id="lbClear">清除全部</button>
+          <button type="button" class="btn" id="rpExport">匯出紀錄（JSON）</button>
+          <label class="btn">匯入紀錄<input type="file" id="rpImport" accept=".json,application/json" hidden></label>
+          <button type="button" class="btn" id="rpClear">清除全部</button>
         </div>
       </details>
     </section>

@@ -703,24 +703,26 @@ async function renderStockSignals(st) {
   $("stSigTable").querySelectorAll("[data-focus]").forEach((b) => (b.onclick = () => setFocus(b.dataset.focus)));
 }
 
-// ---------- blind labelling (盲測標註) ----------
-// A random stock and day; only the 120 sessions up to that day are shown. The viewer decides what to do at the next
-// open; the next 20 sessions are revealed after the click. Labels live in this browser (export / import as JSON).
-// "Your twin" is a softmax regression on 21 KDJ / MACD / MA / price features, retrained after every label once there
-// are enough; it guesses each answer before it is revealed, so its hit rate is an honest out-of-sample number.
-const LB_KEY = "labels_v1", LB_SHOW = 120, LB_FUT = 20, LB_MIN = 20;
-const LB_CLASSES = ["sell", "hold", "buy"];
-const LB_TEXT = { buy: "買進", hold: "不動作", sell: "賣出／放空" };
-const LB_SIDE = { buy: 1, hold: 0, sell: -1 };
-const LB_FEATS = ["K 值", "D 值", "J 值", "K − D", "K 一日變化", "DIF／股價", "MACD 線／股價", "柱狀體／股價", "柱狀體一日變化",
+// ---------- blind trading replay (盲測交易回放) ----------
+// A random stock and period, revealed one session at a time. The viewer may wait, buy or sell whenever they like;
+// orders fill at the next open (as in the backtests) and positions are held as long as the viewer wants. Every
+// session the viewer saw is recorded with its features and whether they acted, which trains two "twin" models:
+// when they buy while flat, and when they sell while holding. A session's predictions come from models trained on
+// earlier sessions only, so their scores are out of sample.
+const RP_KEY = "replay_v1", RP_SHOW = 120, RP_AFTER = 20;
+const RP_LENS = [[120, "最長 120 天（約半年）"], [250, "最長 250 天（約一年）"], [500, "最長 500 天（約兩年）"]];
+const RP_FEATS = ["K 值", "D 值", "J 值", "K − D", "K 一日變化", "DIF／股價", "MACD 線／股價", "柱狀體／股價", "柱狀體一日變化",
   "距週線", "距月線", "距季線", "距年線", "5 日漲跌", "20 日漲跌", "60 日漲跌", "20 日波動度", "60 日區間位置", "量比", "高檔鈍化天數", "低檔鈍化天數"];
-const lbState = { blind: true, uni: "all", focus: "mix", cur: null, model: null, cv: null, ready: false };
-let lbData = [];
-try { lbData = JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch {}
-const lbSave = () => { try { localStorage.setItem(LB_KEY, JSON.stringify(lbData)); } catch {} };
-const lbBase = new Map();
+const RP_HOLD = ["持有報酬", "持有天數"];
+const rp = { blind: true, uni: "all", len: 250, g: null, models: { in: null, out: null }, charts: null };
+let rpData = { version: 1, sessions: [] };
+try { const x = JSON.parse(localStorage.getItem(RP_KEY)); if (x?.sessions) rpData = x; } catch {}
+const rpSave = () => {
+  try { localStorage.setItem(RP_KEY, JSON.stringify(rpData)); } catch { alert("瀏覽器空間不足，請先「匯出紀錄」備份。"); }
+};
+const r4 = (x) => Math.round(x * 1e4) / 1e4;
 
-function lbFeatures(st, t) {
+function rpFeatures(st, t) {
   const { c, v } = st, k = st.kd.k, d = st.kd.d, j = st.kd.j, dif = st.macd.dif, sig = st.macd.macd, osc = st.macd.osc, ma = st.ma;
   let hi = -Infinity, lo = Infinity, vol = 0, vavg = 0;
   for (let i = t - 59; i <= t; i++) { hi = Math.max(hi, c[i]); lo = Math.min(lo, c[i]); }
@@ -731,339 +733,439 @@ function lbFeatures(st, t) {
   return [k[t] / 100, d[t] / 100, j[t] / 100, (k[t] - d[t]) / 100, (k[t] - k[t - 1]) / 100, (dif[t] / c[t]) * 100, (sig[t] / c[t]) * 100,
     (osc[t] / c[t]) * 100, ((osc[t] - osc[t - 1]) / c[t]) * 100, c[t] / ma[5][t] - 1, c[t] / ma[20][t] - 1, c[t] / ma[60][t] - 1,
     c[t] / ma[240][t] - 1, c[t] / c[t - 5] - 1, c[t] / c[t - 20] - 1, c[t] / c[t - 60] - 1, Math.sqrt(vol / 20),
-    (c[t] - lo) / (hi - lo || 1), v[t] / (vavg || 1), up, dn].map((x) => (Number.isFinite(x) ? x : 0));
+    (c[t] - lo) / (hi - lo || 1), v[t] / (vavg || 1), up, dn].map((x) => r4(Number.isFinite(x) ? x : 0));
 }
 
-// Average move from the next open to the open 20 sessions later, over the stock's whole history (the "平常").
-function lbBaseline(st) {
-  if (!lbBase.has(st.code)) {
-    let s = 0, n = 0;
-    for (let i = 60; i + LB_FUT + 1 < st.o.length; i++) { s += st.o[i + LB_FUT + 1] / st.o[i + 1] - 1; n++; }
-    lbBase.set(st.code, n ? s / n : 0);
-  }
-  return lbBase.get(st.code);
-}
-
-// ---- the twin: softmax regression with L2, standardized features ----
-function lbFit(rows, iters = 300) {
-  const p = LB_FEATS.length, X = rows.map((r) => r.f), y = rows.map((r) => LB_CLASSES.indexOf(r.label));
-  const mu = Array(p).fill(0), sd = Array(p).fill(0);
-  X.forEach((x) => x.forEach((v, i) => (mu[i] += v / X.length)));
-  X.forEach((x) => x.forEach((v, i) => (sd[i] += (v - mu[i]) ** 2 / X.length)));
+// ---- twin models: weighted, class-balanced logistic regression on standardized features ----
+function rpFit(X, y, w, iters = 400) {
+  const p = X[0].length, n = X.length, mu = Array(p).fill(0), sd = Array(p).fill(0);
+  X.forEach((x) => x.forEach((v, i) => (mu[i] += v / n)));
+  X.forEach((x) => x.forEach((v, i) => (sd[i] += (v - mu[i]) ** 2 / n)));
   sd.forEach((v, i) => (sd[i] = Math.sqrt(v) || 1));
   const Z = X.map((x) => x.map((v, i) => Math.max(-5, Math.min(5, (v - mu[i]) / sd[i]))));
-  const W = [0, 1, 2].map(() => Array(p).fill(0)), b = [0, 0, 0], lr = 0.3, l2 = 0.02;
+  const pos = y.reduce((a, v, i) => a + (v ? w[i] : 0), 0), neg = y.reduce((a, v, i) => a + (v ? 0 : w[i]), 0);
+  const ww = w.map((v, i) => (y[i] ? v * Math.min(50, neg / (pos || 1)) : v)), tw = ww.reduce((a, v) => a + v, 0);
+  const W = Array(p).fill(0);
+  let b = 0;
   for (let it = 0; it < iters; it++) {
-    const gW = [0, 1, 2].map(() => Array(p).fill(0)), gb = [0, 0, 0];
-    Z.forEach((z, n) => {
-      const pr = lbSoftmax(W, b, z);
-      for (let k = 0; k < 3; k++) {
-        const e = pr[k] - (y[n] === k ? 1 : 0);
-        gb[k] += e / Z.length;
-        for (let i = 0; i < p; i++) gW[k][i] += (e * z[i]) / Z.length;
-      }
+    const g = Array(p).fill(0);
+    let gb = 0;
+    Z.forEach((z, k) => {
+      const e = (1 / (1 + Math.exp(-(b + z.reduce((a, v, i) => a + v * W[i], 0)))) - y[k]) * ww[k] / tw;
+      gb += e;
+      for (let i = 0; i < p; i++) g[i] += e * z[i];
     });
-    for (let k = 0; k < 3; k++) {
-      b[k] -= lr * gb[k];
-      for (let i = 0; i < p; i++) W[k][i] -= lr * (gW[k][i] + l2 * W[k][i]);
-    }
+    b -= 0.5 * gb;
+    for (let i = 0; i < p; i++) W[i] -= 0.5 * (g[i] + 0.01 * W[i]);
   }
-  return { mu, sd, W, b, n: rows.length };
+  return { mu, sd, W, b, n, pos: y.filter(Boolean).length };
 }
-function lbSoftmax(W, b, z) {
-  const s = W.map((w, k) => b[k] + w.reduce((a, v, i) => a + v * z[i], 0)), m = Math.max(...s), e = s.map((v) => Math.exp(v - m)), t = e.reduce((a, v) => a + v, 0);
-  return e.map((v) => v / t);
-}
-const lbPredict = (m, f) => lbSoftmax(m.W, m.b, f.map((v, i) => Math.max(-5, Math.min(5, (v - m.mu[i]) / m.sd[i]))));
-const lbTrainable = () => lbData.length >= LB_MIN && LB_CLASSES.filter((c) => lbData.filter((r) => r.label === c).length >= 3).length >= 2;
+const rpProb = (m, x) => 1 / (1 + Math.exp(-(m.b + x.reduce((a, v, i) => a + m.W[i] * Math.max(-5, Math.min(5, (v - m.mu[i]) / m.sd[i])), 0))));
+const rpX = (d) => (d.s ? [...d.f, d.u, d.h / 100] : d.f);
 
-function lbRetrain() {
-  if (!lbTrainable()) { lbState.model = lbState.cv = null; return; }
-  lbState.model = lbFit(lbData);
-  // 5-fold cross-validated accuracy on a fixed shuffle (Park-Miller seed), against always guessing the commonest answer
-  const idx = lbData.map((_, i) => i);
-  let seed = 12345;
-  for (let i = idx.length - 1; i > 0; i--) { seed = (seed * 16807) % 2147483647; const j = seed % (i + 1); [idx[i], idx[j]] = [idx[j], idx[i]]; }
-  let hit = 0;
-  for (let f = 0; f < 5; f++) {
-    const test = idx.filter((_, k) => k % 5 === f), train = idx.filter((_, k) => k % 5 !== f).map((i) => lbData[i]);
-    if (!test.length || train.length < 10) continue;
-    const m = lbFit(train, 200);
-    test.forEach((i) => { const pr = lbPredict(m, lbData[i].f); if (LB_CLASSES[pr.indexOf(Math.max(...pr))] === lbData[i].label) hit++; });
+function rpTrain() {
+  const days = rpData.sessions.flatMap((s) => s.days);
+  for (const [key, state] of [["in", 0], ["out", 1]]) {
+    const rows = days.filter((d) => d.s === state);
+    const pos = rows.filter((d) => d.a).length;
+    rp.models[key] = pos >= 4 && rows.length - pos >= 30 ? rpFit(rows.map(rpX), rows.map((d) => d.a), rows.map((d) => (d.k ? 0.5 : 1))) : null;
   }
-  const counts = LB_CLASSES.map((c) => lbData.filter((r) => r.label === c).length);
-  lbState.cv = { acc: hit / lbData.length, base: Math.max(...counts) / lbData.length };
 }
 
-// ---- the chart: interactive (drag back through history, wheel / pinch zoom). Only bars up to the decision day are
-// loaded, so nothing after it can be scrolled into view until the answer; in blind mode the time axis shows sessions
-// relative to the decision day and prices are rebased to 100 at its close.
-let lbCharts = [], lbView = null;
-const LB_T0 = Date.UTC(2000, 0, 3) / 1000;
-
-function lbDestroy() {
-  lbCharts.forEach((c) => c.chart.remove());
-  lbCharts = [];
+function rpAuc(pairs) { // area under the ROC curve: chance that an acted-on day scores above a day the viewer passed
+  const pos = pairs.filter(([, y]) => y).map(([p]) => p), neg = pairs.filter(([, y]) => !y).map(([p]) => p);
+  if (!pos.length || !neg.length) return null;
+  let s = 0;
+  for (const a of pos) for (const b of neg) s += a > b ? 1 : a === b ? 0.5 : 0;
+  return s / (pos.length * neg.length);
 }
 
-function lbDraw(st, t, revealed, blind) {
-  lbDestroy();
-  const narrow = $("lbPrice").clientWidth < 560, show = narrow ? 60 : LB_SHOW;
-  const end = revealed ? t + LB_FUT : t, norm = blind ? 100 / st.c[t] : 1, up = cssVar("--up"), down = cssVar("--down");
-  const T = (i) => (blind ? LB_T0 + i * 86400 : st.d[i]);
+// ---- the chart: built once per game, one bar appended per session so the viewer's zoom and scroll stay ----
+function rpChartInit(g) {
+  rpChartDestroy();
+  const { st, s } = g, up = cssVar("--up"), down = cssVar("--down");
+  const norm = () => (g.blind && !g.ended ? 100 / st.c[s] : 1);
+  const T = (i) => (g.blind ? Date.UTC(2000, 0, 3) / 1000 + i * 86400 : st.d[i]);
+  g.T = T;
   const idx = new Map();
-  for (let i = 0; i <= end; i++) idx.set(blind ? T(i) : st.d[i], i);
-  const rel = (time) => { const i = idx.get(time); return i == null ? "" : i === t ? "決策日" : `${i > t ? "+" : ""}${i - t} 天`; };
+  const label = (time) => {
+    const i = idx.get(time);
+    if (i == null) return "";
+    if (!g.blind || g.ended) return st.d[i];
+    return i < s ? `${i - s} 天` : `第 ${i - s} 天`;
+  };
   const opts = (showTime) => {
     const o = chartOptions(showTime);
-    if (blind) {
-      o.timeScale = { ...o.timeScale, tickMarkFormatter: (time) => rel(time) };
-      o.localization = { ...o.localization, timeFormatter: (time) => rel(time) };
-    }
+    o.timeScale = { ...o.timeScale, tickMarkFormatter: (time) => label(time) };
+    o.localization = { ...o.localization, timeFormatter: (time) => label(time) };
     return o;
   };
+  const price = LWC.createChart($("lbPrice"), opts(false));
+  const candle = price.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceLineVisible: false });
+  candle.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.18 } });
+  const vol = price.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, color: cssVar("--vol"), priceLineVisible: false, lastValueVisible: false });
+  price.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+  const mk = (chart, color, width = 1) => chart.addLineSeries({ color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  const ma = [[5, mk(price, cssVar("--s1"))], [20, mk(price, cssVar("--s3"))], [60, mk(price, cssVar("--s4"))]];
+  const kd = LWC.createChart($("lbKd"), opts(false));
+  const kS = mk(kd, cssVar("--s1"), 2), dS = mk(kd, cssVar("--s2"), 2), jS = mk(kd, cssVar("--s5"), 1);
+  for (const lvl of [20, 80]) kS.createPriceLine({ price: lvl, color: cssVar("--axis"), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: "" });
+  const mc = LWC.createChart($("lbMacd"), opts(true));
+  const osc = mc.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+  const difS = mk(mc, cssVar("--s1"), 2), sigS = mk(mc, cssVar("--s2"), 2);
   const fade = (hex) => {
     const h = hex.replace("#", ""), n = parseInt(h.length === 3 ? h.replace(/./g, "$&$&") : h, 16);
     return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, 0.45)`;
   };
-  const price = LWC.createChart($("lbPrice"), opts(false));
-  const candle = price.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down, priceLineVisible: false,
-    priceFormat: { type: "price", precision: 2, minMove: 0.01 } });
-  const bars = [];
-  for (let i = 0; i <= end; i++) {
-    const b = { time: T(i), open: st.o[i] * norm, high: st.h[i] * norm, low: st.l[i] * norm, close: st.c[i] * norm };
-    if (i > t) { const c = st.c[i] >= st.o[i] ? fade(up) : fade(down); Object.assign(b, { color: c, wickColor: c }); }
-    bars.push(b);
-  }
-  candle.setData(bars);
-  candle.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.18 } });
-  const vol = price.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, color: cssVar("--vol"), priceLineVisible: false, lastValueVisible: false });
-  vol.setData(Array.from({ length: end + 1 }, (_, i) => ({ time: T(i), value: st.v[i] })));
-  price.priceScale("vol").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
-  const line = (chart, arr, color, width = 1, scale = 1) => {
-    const s = chart.addLineSeries({ color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-    s.setData(Array.from({ length: end + 1 }, (_, i) => (Number.isFinite(arr[i]) ? { time: T(i), value: arr[i] * scale } : { time: T(i) })));
-    return s;
+  const C = { price, kd, mc, candle };
+  const put = (i, faded, set) => {
+    const z = norm(), t = T(i);
+    idx.set(t, i);
+    const bar = { time: t, open: st.o[i] * z, high: st.h[i] * z, low: st.l[i] * z, close: st.c[i] * z };
+    if (faded) { const col = fade(st.c[i] >= st.o[i] ? up : down); Object.assign(bar, { color: col, wickColor: col }); }
+    const pt = (v, k = 1) => (Number.isFinite(v) ? { time: t, value: v * k } : { time: t });
+    const m = g.blind && !g.ended ? 100 / st.c[s] : 1;
+    const rows = [[candle, bar], [vol, { time: t, value: st.v[i] }], ...ma.map(([n, sr]) => [sr, pt(st.ma[n][i], z)]),
+      [kS, pt(st.kd.k[i])], [dS, pt(st.kd.d[i])], [jS, pt(st.kd.j[i])],
+      [osc, { time: t, value: st.macd.osc[i] * m, color: st.macd.osc[i] >= 0 ? up : down }], [difS, pt(st.macd.dif[i], m)], [sigS, pt(st.macd.macd[i], m)]];
+    for (const [sr, v] of rows) {
+      if (set) set.get(sr).push(v);
+      else sr.update(v);
+    }
   };
-  line(price, st.ma[5], cssVar("--s1"), 1, norm);
-  line(price, st.ma[20], cssVar("--s3"), 1, norm);
-  line(price, st.ma[60], cssVar("--s4"), 1, norm);
-  if (revealed) candle.setMarkers([{ time: T(t), position: "aboveBar", color: cssVar("--ink-2"), shape: "arrowDown", text: "決策日" }]);
-
-  const kd = LWC.createChart($("lbKd"), opts(false));
-  const kS = line(kd, st.kd.k, cssVar("--s1"), 2);
-  line(kd, st.kd.d, cssVar("--s2"), 2);
-  line(kd, st.kd.j, cssVar("--s5"), 1);
-  for (const lvl of [20, 80]) kS.createPriceLine({ price: lvl, color: cssVar("--axis"), lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: "" });
-
-  const mc = LWC.createChart($("lbMacd"), opts(true));
-  const osc = mc.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
-  const scale = blind ? norm : 1;
-  osc.setData(Array.from({ length: end + 1 }, (_, i) => ({ time: T(i), value: st.macd.osc[i] * scale, color: st.macd.osc[i] >= 0 ? up : down })));
-  const difS = line(mc, st.macd.dif, cssVar("--s1"), 2, scale);
-  line(mc, st.macd.macd, cssVar("--s2"), 2, scale);
-
-  lbCharts = [
-    { chart: price, series: candle, value: (i) => st.c[i] * norm },
-    { chart: kd, series: kS, value: (i) => st.kd.k[i] },
-    { chart: mc, series: difS, value: (i) => st.macd.dif[i] * scale },
-  ];
-  const legend = (i) => {
-    if (i == null || i > end) i = t;
-    const chg = st.c[i] / st.c[i - 1] - 1;
-    $("lbLegend").innerHTML = `<span><b>${blind ? rel(T(i)) || "決策日" : st.d[i]}</b></span><span>開 ${num(st.o[i] * norm)}</span><span>高 ${num(st.h[i] * norm)}</span><span>低 ${num(st.l[i] * norm)}</span>`
-      + `<span>收 <b>${num(st.c[i] * norm)}</b> <span class="${chg >= 0 ? "pos" : "neg"}">${spct(chg, 2)}</span></span>`
-      + `<span>K <b>${num(st.kd.k[i], 0)}</b> D <b>${num(st.kd.d[i], 0)}</b> J ${num(st.kd.j[i], 0)}</span><span>DIF ${num(st.macd.dif[i] * scale)} MACD ${num(st.macd.macd[i] * scale)}</span>`
-      + `<span class="muted">均線：藍 5 日・綠 20 日・黃 60 日</span>`;
+  // initial history in one setData per series
+  const bulk = new Map([candle, vol, ...ma.map(([, sr]) => sr), kS, dS, jS, osc, difS, sigS].map((sr) => [sr, []]));
+  for (let i = 0; i <= g.cur; i++) put(i, false, bulk);
+  for (const [sr, arr] of bulk) sr.setData(arr);
+  C.put = (i, faded) => put(i, faded, null);
+  C.legend = (i) => {
+    if (i == null) i = g.cur;
+    const z = norm(), chg = st.c[i] / st.c[i - 1] - 1;
+    $("lbLegend").innerHTML = `<span><b>${label(T(i))}</b></span><span>開 ${num(st.o[i] * z)}</span><span>高 ${num(st.h[i] * z)}</span><span>低 ${num(st.l[i] * z)}</span>`
+      + `<span>收 <b>${num(st.c[i] * z)}</b> <span class="${chg >= 0 ? "pos" : "neg"}">${spct(chg, 2)}</span></span><span>K <b>${num(st.kd.k[i], 0)}</b> D <b>${num(st.kd.d[i], 0)}</b> J ${num(st.kd.j[i], 0)}</span>`
+      + `<span class="muted">均線：藍 5・綠 20・黃 60 日</span>`;
   };
-  legend(t);
-
-  // the "?" panel over the empty space after the decision day, kept in place while scrolling / zooming
-  const fut = $("lbFuture");
-  const place = () => {
-    if (revealed) { fut.hidden = true; return; }
-    const ts = price.timeScale(), a = ts.logicalToCoordinate(t), b = ts.logicalToCoordinate(t + 1);
+  const list = [{ chart: price, series: candle, value: (i) => st.c[i] * norm() }, { chart: kd, series: kS, value: (i) => st.kd.k[i] }, { chart: mc, series: difS, value: (i) => st.macd.dif[i] * norm() }];
+  C.place = () => {
+    const fut = $("lbFuture");
+    if (g.ended) { fut.hidden = true; return; }
+    const ts = price.timeScale(), a = ts.logicalToCoordinate(g.cur), b = ts.logicalToCoordinate(g.cur + 1);
     const x = a == null || b == null ? null : (a + b) / 2, w = $("lbPrice").clientWidth - price.priceScale("right").width();
     fut.hidden = x == null || x >= w;
     if (!fut.hidden) { fut.style.left = `${Math.max(0, x)}px`; fut.style.width = `${w - Math.max(0, x)}px`; }
   };
   let syncing = false;
-  for (const c of lbCharts) {
+  for (const c of list) {
     c.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (syncing || !r) return;
       syncing = true;
-      for (const o of lbCharts) if (o !== c) o.chart.timeScale().setVisibleLogicalRange(r);
+      for (const o of list) if (o !== c) o.chart.timeScale().setVisibleLogicalRange(r);
       syncing = false;
-      place();
+      C.place();
     });
     c.chart.subscribeCrosshairMove((param) => {
       if (syncing) return;
       syncing = true;
       const i = param.time != null ? idx.get(param.time) : undefined;
-      for (const o of lbCharts) {
+      for (const o of list) {
         if (o === c) continue;
         if (i === undefined) o.chart.clearCrosshairPosition();
         else o.chart.setCrosshairPosition(o.value(i), param.time, o.series);
       }
-      legend(i);
+      C.legend(i);
       syncing = false;
     });
   }
-  lbView = { t, show, end, set: (from, to) => price.timeScale().setVisibleLogicalRange({ from, to }) };
-  lbZoom("recent");
-  // autoSize sizes the charts after layout, which resets the range: apply it again once they have their width
-  setTimeout(() => { lbZoom("recent"); place(); }, 80);
+  C.view = (from, to) => price.timeScale().setVisibleLogicalRange({ from, to });
+  C.list = list;
+  rp.charts = C;
+  C.legend();
+  const narrow = $("lbPrice").clientWidth < 560;
+  g.show = narrow ? 60 : RP_SHOW;
+  const home = () => {
+    if (g.ended) C.view(g.s - 20, Math.min(g.cur + RP_AFTER, st.d.length - 1) + 5);
+    else C.view(g.cur - g.show, g.cur + 12);
+    C.place();
+  };
+  home();
+  setTimeout(home, 80);
 }
 
-function lbZoom(how) {
-  if (!lbView || !lbCharts.length) return;
-  const ts = lbCharts[0].chart.timeScale(), r = ts.getVisibleLogicalRange(), { t, show } = lbView;
-  const right = t + LB_FUT + 2;
-  if (how === "recent") return lbView.set(t - show, right);
-  if (how === "all") return lbView.set(0, right);
+function rpChartDestroy() {
+  if (!rp.charts) return;
+  rp.charts.list.forEach((c) => c.chart.remove());
+  rp.charts = null;
+}
+
+function rpZoom(how) {
+  const C = rp.charts, g = rp.g;
+  if (!C || !g) return;
+  const r = C.list[0].chart.timeScale().getVisibleLogicalRange();
+  if (how === "recent") return C.view(g.cur - g.show, g.cur + 12);
+  if (how === "all") return C.view(0, g.cur + 12);
   if (!r) return;
   const mid = (r.from + r.to) / 2, half = ((r.to - r.from) / 2) * (how === "in" ? 0.6 : 1.6);
-  lbView.set(Math.max(-5, mid - half), mid + half);
+  C.view(Math.max(-5, mid - half), mid + half);
 }
 
-async function lbNew() {
-  const pool = S.stocks.filter((s) => lbState.uni === "all" || s.kind === lbState.uni);
-  for (let tries = 0; tries < 12; tries++) {
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    const st = await loadStock(pick.code), n = st.d.length, lo = 260, hi = n - LB_FUT - 2;
-    if (hi - lo < 50) continue;
-    let t = lo + Math.floor(Math.random() * (hi - lo));
-    if (lbState.focus === "extreme" || (lbState.focus === "mix" && Math.random() < 0.5)) {
-      const cand = [];
-      for (let i = lo; i < hi; i++) if (st.kd.k[i] < 25 || st.kd.k[i] > 75) cand.push(i);
-      if (cand.length) t = cand[Math.floor(Math.random() * cand.length)];
+function rpMarkers() {
+  const g = rp.g, C = rp.charts;
+  if (!g || !C) return;
+  const up = cssVar("--up"), down = cssVar("--down"), m = [];
+  for (const t of g.trades) {
+    m.push({ time: g.T(t.i0), position: "belowBar", color: up, shape: "arrowUp", text: "買" });
+    if (t.i1 != null && !t.open) m.push({ time: g.T(t.i1), position: "aboveBar", color: down, shape: "arrowDown", text: "賣" });
+  }
+  if (g.entry) m.push({ time: g.T(g.entry.i), position: "belowBar", color: up, shape: "arrowUp", text: "買" });
+  if (g.ended && g.twin) {
+    for (const t of g.twin.trades) {
+      m.push({ time: g.T(t.i0), position: "belowBar", color: cssVar("--s7"), shape: "circle", text: "分身買" });
+      if (t.i1 != null && !t.open) m.push({ time: g.T(t.i1), position: "aboveBar", color: cssVar("--s7"), shape: "circle", text: "分身賣" });
     }
-    const f = lbFeatures(st, t);
-    lbState.cur = { st, t, f, guess: lbState.model ? lbPredict(lbState.model, f) : null, answered: null };
-    return;
+  }
+  m.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+  C.candle.setMarkers(m);
+}
+
+// ---- the game ----
+async function rpNewGame() {
+  rpChartDestroy();
+  $("rpResult").hidden = true;
+  const pool = S.stocks.filter((x) => rp.uni === "all" || x.kind === rp.uni);
+  for (let tries = 0; tries < 20; tries++) {
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const st = await loadStock(pick.code), n = st.d.length, lo = 260, hi = n - 62;
+    if (hi <= lo) continue;
+    const s = lo + Math.floor(Math.random() * (hi - lo));
+    rp.g = { st, s, cur: s, max: Math.min(s + rp.len, n - 2), blind: rp.blind, entry: null, trades: [], days: [], ended: false,
+      fees: st.fees || { buy: ENGINE.buyFee, sell: ENGINE.sellFee }, models: { in: rp.models.in, out: rp.models.out } };
+    break;
+  }
+  if (state.tab !== "label" || !rp.g) return;
+  rpChartInit(rp.g);
+  rpMarkers();
+  rpRender();
+}
+
+function rpRecordDay(acted, skipped) {
+  const g = rp.g, i = g.cur, st = g.st, f = rpFeatures(st, i), holding = !!g.entry;
+  const d = { i, s: holding ? 1 : 0, a: acted ? 1 : 0, k: skipped ? 1 : 0, f };
+  if (holding) { d.u = r4(st.c[i] / g.entry.px - 1); d.h = i - g.entry.i + 1; }
+  const m = holding ? g.models.out : g.models.in;
+  if (m) d.p = r4(rpProb(m, rpX(d)));
+  g.days.push(d);
+}
+
+function rpAdvance(n) {
+  const g = rp.g;
+  for (let k = 0; k < n && g.cur < g.max; k++) {
+    g.cur++;
+    rp.charts.put(g.cur, false);
+  }
+  rp.charts.legend();
+  rp.charts.place();
+  if (g.cur >= g.max) rpEnd(true);
+  else rpRender();
+}
+
+function rpAct(kind) {
+  const g = rp.g;
+  if (!g || g.ended) return;
+  const st = g.st, holding = !!g.entry;
+  if (kind === "buy" && !holding) {
+    rpRecordDay(true, false);
+    g.entry = { i: g.cur + 1, px: st.o[g.cur + 1] };
+    rpAdvance(1);
+    if (!g.ended) rpMarkers();
+  } else if (kind === "sell" && holding) {
+    rpRecordDay(true, false);
+    const px = st.o[g.cur + 1];
+    g.trades.push({ i0: g.entry.i, p0: g.entry.px, i1: g.cur + 1, p1: px, r: r4((px * (1 - g.fees.sell)) / (g.entry.px * (1 + g.fees.buy)) - 1) });
+    g.entry = null;
+    rpAdvance(1);
+    if (!g.ended) rpMarkers();
+  } else if (kind === "next" || kind === "ff5" || kind === "ff20") {
+    const n = kind === "next" ? 1 : kind === "ff5" ? 5 : 20;
+    for (let k = 0; k < n && g.cur + k < g.max; k++) {
+      const save = g.cur;
+      g.cur = save + k;
+      rpRecordDay(false, k > 0);
+      g.cur = save;
+    }
+    rpAdvance(n);
   }
 }
 
-function lbAnswer(label) {
-  const c = lbState.cur;
-  if (!c || c.answered) return;
-  const { st, t } = c, o = st.o, base = lbBaseline(st);
-  const r20 = o[t + LB_FUT + 1] / o[t + 1] - 1, r5 = o[t + 6] / o[t + 1] - 1;
-  let mx = -Infinity, mn = Infinity;
-  for (let i = t + 1; i <= t + LB_FUT; i++) { mx = Math.max(mx, st.h[i]); mn = Math.min(mn, st.l[i]); }
-  const guess = c.guess ? LB_CLASSES[c.guess.indexOf(Math.max(...c.guess))] : null;
-  c.answered = { label, r5, r20, base, up: mx / o[t + 1] - 1, dn: mn / o[t + 1] - 1, guess, conf: c.guess ? Math.max(...c.guess) : null };
-  lbData.push({ code: st.code, d: st.d[t], i: t, label, f: c.f, r5: +r5.toFixed(5), r20: +r20.toFixed(5), base: +base.toFixed(5), guess, blind: lbState.blind, ts: Date.now() });
-  lbSave();
-  lbRender();
-  setTimeout(() => { lbRetrain(); lbRenderSide(); }, 0);
+// What the twins would have done in this game (orders when their probability passes one half).
+function rpTwinPlay(g) {
+  if (!g.models.in) return null;
+  const st = g.st, trades = [];
+  let entry = null;
+  for (let i = g.s; i < g.cur; i++) {
+    const f = rpFeatures(st, i);
+    if (!entry && rpProb(g.models.in, f) > 0.5) entry = { i: i + 1, px: st.o[i + 1] };
+    else if (entry && g.models.out && rpProb(g.models.out, [...f, st.c[i] / entry.px - 1, (i - entry.i + 1) / 100]) > 0.5) {
+      trades.push({ i0: entry.i, p0: entry.px, i1: i + 1, p1: st.o[i + 1], r: (st.o[i + 1] * (1 - g.fees.sell)) / (entry.px * (1 + g.fees.buy)) - 1 });
+      entry = null;
+    }
+  }
+  if (entry) trades.push({ i0: entry.i, p0: entry.px, i1: g.cur, p1: st.c[g.cur], r: (st.c[g.cur] * (1 - g.fees.sell)) / (entry.px * (1 + g.fees.buy)) - 1, open: true });
+  return { trades, ret: trades.reduce((a, t) => a * (1 + t.r), 1) - 1 };
 }
 
-function lbRender() {
-  const c = lbState.cur;
-  if (!c) return;
-  const { st, t } = c, a = c.answered, blind = lbState.blind && !a;
-  $("lbHead").innerHTML = blind ? `<b>第 ${lbData.length + 1} 題</b><span class="muted">股票、日期與價格已隱藏（價格以決策日收盤 = 100 表示）</span>`
-    : `<b>${st.code} ${esc(st.name)}</b><span class="muted">決策日 ${st.d[t]}・收盤 ${fmtPx(st.c[t])}</span><a class="link-btn" href="#/stock/${st.code}?p=custom&from=${st.d[Math.max(0, t - 250)]}&to=${st.d[Math.min(st.d.length - 1, t + 60)]}">在個股頁看前後走勢</a>`;
-  lbDraw(st, t, !!a, lbState.blind && !a);
-  $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.disabled = !!a));
-  $("lbNext").hidden = !a;
-  $("lbSkip").hidden = !!a;
-  const res = $("lbResult");
-  res.hidden = !a;
-  if (!a) return;
-  const ex = a.r20 - a.base;
-  const verdict = a.label === "buy" ? (ex >= 0 ? "買進之後比平常好" : "買進之後比平常差")
-    : a.label === "sell" ? (ex <= 0 ? "賣出（放空）之後比平常弱，賣得好" : "賣出之後反而比平常強")
-    : Math.abs(a.r20) < 0.03 ? "不動作：之後走勢平淡" : `不動作：之後${a.r20 > 0 ? "上漲" : "下跌"} ${pct(Math.abs(a.r20))}`;
-  res.innerHTML = `<strong>你選「${LB_TEXT[a.label]}」</strong>${verdict}。隔天開盤起 5 日 <span class="${a.r5 >= 0 ? "pos" : "neg"}">${spct(a.r5)}</span>、20 日 <span class="${a.r20 >= 0 ? "pos" : "neg"}">${spct(a.r20)}</span>（這檔平常 20 日 ${spct(a.base)}）；20 日內最高 <span class="pos">${spct(a.up)}</span>、最低 <span class="neg">${spct(a.dn)}</span>。`
-    + (a.guess ? `<br>你的分身事先猜「${LB_TEXT[a.guess]}」（信心 ${pct(a.conf, 0)}）${a.guess === a.label ? "，猜對了。" : "，猜錯了。"}` : "")
-    + ` <span class="muted">按 Enter 或「下一題」繼續。</span>`;
+function rpEnd(auto) {
+  const g = rp.g;
+  if (!g || g.ended) return;
+  const st = g.st;
+  if (g.entry) {
+    const px = st.c[g.cur];
+    g.trades.push({ i0: g.entry.i, p0: g.entry.px, i1: g.cur, p1: px, r: r4((px * (1 - g.fees.sell)) / (g.entry.px * (1 + g.fees.buy)) - 1), open: true });
+    g.entry = null;
+  }
+  g.ended = true;
+  g.ret = g.trades.reduce((a, t) => a * (1 + t.r), 1) - 1;
+  g.bh = (st.c[g.cur] * (1 - g.fees.sell)) / (st.o[g.s + 1] * (1 + g.fees.buy)) - 1;
+  g.twin = rpTwinPlay(g);
+  rpData.sessions.push({ id: Date.now(), code: st.code, d0: st.d[g.s], d1: st.d[g.cur], s: g.s, e: g.cur, blind: g.blind, len: rp.len,
+    trades: g.trades, ret: r4(g.ret), bh: r4(g.bh), twin: g.twin ? r4(g.twin.ret) : null, days: g.days });
+  rpSave();
+  rpTrain();
+  rpRebuild();
+  rpRender();
+  rpSide();
 }
 
-function lbRenderSide() {
-  const n = lbData.length;
-  $("lbCount").textContent = `已標註 ${n} 筆（存在這台裝置）`;
-  const rows = LB_CLASSES.slice().reverse().map((c) => {
-    const g = lbData.filter((r) => r.label === c), ex = g.map((r) => r.r20 - r.base);
-    const good = c === "buy" ? g.filter((r) => r.r20 > r.base).length : c === "sell" ? g.filter((r) => r.r20 < r.base).length : null;
-    return `<tr><td>${actChip(LB_TEXT[c], LB_SIDE[c])}</td><td>${g.length}</td><td class="${mean(ex) >= 0 ? "pos" : "neg"}">${g.length ? spct(mean(ex)) : "—"}</td><td>${good === null || !g.length ? "—" : pct(good / g.length, 0)}</td></tr>`;
-  }).join("");
-  $("lbStats").innerHTML = n ? `<table class="data"><thead><tr><th>你的選擇</th><th>次數</th><th>之後 20 日<br>比平常多漲</th><th>判斷正確比例</th></tr></thead><tbody>${rows}</tbody></table>
-    <p class="note">「比平常多漲」＝之後 20 日的漲跌減去這檔股票平常 20 日的漲跌。買點越高越好、賣點越低越好；判斷正確＝買後比平常好，或賣後比平常差。</p>` : `<p class="note">還沒有標註。看圖後按「買進」「不動作」或「賣出／放空」。</p>`;
+// Chart rebuilt from scratch (after a game, with real prices and dates plus the 20 sessions that followed, faded;
+// or after a theme change).
+function rpRebuild() {
+  const g = rp.g;
+  if (!g) return;
+  rpChartInit(g);
+  if (g.ended) for (let i = g.cur + 1; i <= Math.min(g.cur + RP_AFTER, g.st.d.length - 1); i++) rp.charts.put(i, true);
+  rpMarkers();
+}
 
-  const m = lbState.model;
-  if (!m) {
-    const need = Math.max(0, LB_MIN - n);
-    $("lbModel").innerHTML = `<p class="note">${need ? `再標 <b>${need}</b> 筆` : "每一類（買、賣、不動作）至少各 3 筆、共兩類以上"}就會開始訓練。之後每標一筆，模型就用全部標註重新訓練一次（在瀏覽器裡、不到一秒）。</p>`;
+function rpRender() {
+  const g = rp.g;
+  if (!g) return;
+  const st = g.st, day = g.cur - g.s, holding = !!g.entry;
+  const unreal = holding ? st.c[g.cur] / g.entry.px - 1 : null;
+  const closed = g.trades.reduce((a, t) => a * (1 + t.r), 1) - 1;
+  const name = g.blind && !g.ended ? "（股票、日期與價格已隱藏，價格以起點收盤 = 100）" : `${st.code} ${esc(st.name)}　${st.d[g.s]} ～ ${st.d[g.cur]}`;
+  $("rpStatus").innerHTML = `<span><b>第 ${day} 天</b>／最長 ${g.max - g.s} 天</span><span>${holding ? `部位：<b class="pos">持有中</b>（第 ${g.cur - g.entry.i + 1} 天，<span class="${unreal >= 0 ? "pos" : "neg"}">${spct(unreal)}</span>）` : "部位：<b>空手</b>"}</span>`
+    + `<span>已實現 ${g.trades.length} 筆，<span class="${closed >= 0 ? "pos" : "neg"}">${spct(closed)}</span></span><span class="muted">${name}</span>`;
+  $("rpBuy").disabled = g.ended || holding;
+  $("rpSell").disabled = g.ended || !holding;
+  for (const id of ["rpNext", "rpFF5", "rpFF20", "rpEnd"]) $(id).disabled = g.ended;
+  const res = $("rpResult");
+  res.hidden = !g.ended;
+  if (!g.ended) return;
+  const rows = g.trades.map((t, k) => `<tr><td>${k + 1}</td><td>${st.d[t.i0]}</td><td>${num(t.p0)}</td><td>${t.open ? "結束時仍持有" : st.d[t.i1]}</td><td>${num(t.p1)}</td><td class="${t.r >= 0 ? "pos" : "neg"}">${spct(t.r)}</td><td>${t.i1 - t.i0} 天</td></tr>`).join("");
+  res.innerHTML = `<strong>本局結束：${st.code} ${esc(st.name)}，${st.d[g.s]} ～ ${st.d[g.cur]}（${g.cur - g.s} 個交易日）</strong><br>`
+    + `你的報酬 <b class="${g.ret >= 0 ? "pos" : "neg"}">${spct(g.ret)}</b>，同期間買進持有 <span class="${g.bh >= 0 ? "pos" : "neg"}">${spct(g.bh)}</span>（${g.ret >= g.bh ? "贏過" : "輸給"}買進持有 ${pct(Math.abs(g.ret - g.bh))}）`
+    + (g.twin ? `；你的分身（只用之前幾局學到的）${spct(g.twin.ret)}，圖上紫色圓點是它的買賣點` : "") + `。含手續費與交易稅；圖上淡色 K 線是本局結束後的 20 天。`
+    + (rows ? `<div class="table-wrap fit"><table class="data"><thead><tr><th>#</th><th>進場</th><th>價格</th><th>出場</th><th>價格</th><th>報酬</th><th>持有</th></tr></thead><tbody>${rows}</tbody></table></div>` : "<br>這一局沒有交易。")
+    + `<div class="actions"><button type="button" class="btn primary" data-new>下一局 <kbd>Enter</kbd></button></div>`;
+  res.querySelector("[data-new]").onclick = rpNewGame;
+}
+
+function rpSide() {
+  const S_ = rpData.sessions, n = S_.length, trades = S_.flatMap((s) => s.trades);
+  $("rpCount").textContent = `已完成 ${n} 局（存在這台裝置）`;
+  if (!n) {
+    $("rpStats").innerHTML = `<p class="note">還沒有完成的一局。按「下一天」「快轉」往前走，覺得該進場就按「買進」、該出場就按「賣出」，最後按「結束本局」。</p>`;
+  } else {
+    const ex = S_.map((s) => s.ret - s.bh), wins = trades.filter((t) => t.r > 0).length, hold = trades.map((t) => t.i1 - t.i0);
+    const avg = mean(S_.map((s) => s.ret)), row = (label, value, note) => `<tr><td>${label}</td><td class="wrap">${value}<br><small class="muted">${note}</small></td></tr>`;
+    $("rpStats").innerHTML = `<table class="data"><tbody>`
+      + row("每局平均報酬", `<b class="${avg >= 0 ? "pos" : "neg"}">${spct(avg)}</b>`, `同期間買進持有 ${spct(mean(S_.map((s) => s.bh)))}`)
+      + row("贏過買進持有", `${ex.filter((x) => x > 0).length}／${n} 局`, `平均差距 ${spct(mean(ex))}`)
+      + row("交易筆數", trades.length, `勝率 ${trades.length ? pct(wins / trades.length, 0) : "—"}、平均每筆 ${trades.length ? spct(mean(trades.map((t) => t.r))) : "—"}`)
+      + row("平均持有", hold.length ? `${Math.round(mean(hold))} 天` : "—", hold.length ? `最短 ${Math.min(...hold)}、最長 ${Math.max(...hold)} 天` : "")
+      + `</tbody></table>`;
+  }
+  const days = S_.flatMap((s) => s.days), buys = days.filter((d) => d.s === 0 && d.a).length, sells = days.filter((d) => d.s === 1 && d.a).length;
+  const mi = rp.models.in, mo = rp.models.out;
+  if (!mi) {
+    $("rpModel").innerHTML = `<p class="note">目前記錄了 ${days.length} 天、其中買進 ${buys} 次、賣出 ${sells} 次。累積到買進 4 次以上（以及 30 個空手觀望日）就會訓練「進場分身」，賣出 4 次以上就會訓練「出場分身」；之後每結束一局重新訓練一次。</p>`;
     return;
   }
-  const recent = lbData.filter((r) => r.guess).slice(-30), hits = recent.filter((r) => r.guess === r.label).length;
-  const top = (k) => LB_FEATS.map((name, i) => [name, m.W[k][i] - (m.W[0][i] + m.W[1][i] + m.W[2][i]) / 3]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3)
-    .map(([name, w]) => `${name}${w > 0 ? "高" : "低"}`).join("、");
-  $("lbModel").innerHTML = `<p>用 <b>${m.n}</b> 筆標註訓練。交叉驗證猜中你的選擇 <b>${pct(lbState.cv.acc, 0)}</b>（每次都猜你最常選的那一類是 ${pct(lbState.cv.base, 0)}）。
-    ${recent.length ? `最近 ${recent.length} 題事先猜中 <b>${pct(hits / recent.length, 0)}</b>。` : ""}</p>
-    <p class="note">它學到你傾向在「${top(2)}」時買進，在「${top(0)}」時賣出。</p>
-    <p class="note">累積 300 筆以上（買、賣都要有一定數量）後，請按「匯出標註」把檔案給我：我會用 Python 做按時間切分的驗證，和你自己的成績、買進持有比較；如果分身真的學到東西，就把它變成正式策略，每天出訊號。</p>`;
+  const aucIn = rpAuc(days.filter((d) => d.s === 0 && d.p != null).map((d) => [d.p, d.a]));
+  const aucOut = rpAuc(days.filter((d) => d.s === 1 && d.p != null).map((d) => [d.p, d.a]));
+  const tend = (m, names) => names.map((nm, i) => [nm, m.W[i]]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 3).map(([nm, w]) => `${nm}${w > 0 ? "高" : "低"}`).join("、");
+  const twinS = S_.filter((s) => s.twin != null);
+  $("rpModel").innerHTML = `<p>進場分身：用 ${mi.n} 個空手日（其中 ${mi.pos} 次買進）訓練，你傾向在「${tend(mi, RP_FEATS)}」時買進。${aucIn != null ? `在它沒看過的局裡，辨識你買進日的 AUC <b>${num(aucIn)}</b>（0.5 = 亂猜、1 = 全對）。` : ""}</p>`
+    + (mo ? `<p>出場分身：用 ${mo.n} 個持有日（其中 ${mo.pos} 次賣出）訓練，你傾向在「${tend(mo, [...RP_FEATS, ...RP_HOLD])}」時賣出。${aucOut != null ? `沒看過的局裡 AUC <b>${num(aucOut)}</b>。` : ""}</p>` : `<p class="note">出場分身：賣出 4 次以上才會訓練（目前 ${sells} 次）。</p>`)
+    + (twinS.length ? `<p class="note">分身在 ${twinS.length} 局（只用之前的局學到的）平均報酬 ${spct(mean(twinS.map((s) => s.twin)))}；你在同樣這些局 ${spct(mean(twinS.map((s) => s.ret)))}，買進持有 ${spct(mean(twinS.map((s) => s.bh)))}。</p>` : "")
+    + `<p class="note">累積 30 局以上後，按「匯出紀錄」把檔案給我，我會用 Python 做完整驗證；分身如果真的學到東西，就變成正式策略、每天出訊號。</p>`;
 }
 
-function lbRecent() {
-  const last = lbData.slice(-12).reverse();
-  $("lbRecent").innerHTML = last.length ? `<table class="data"><thead><tr><th>股票</th><th>決策日</th><th>你的選擇</th><th>20 日</th><th>分身猜</th></tr></thead><tbody>${last.map((r) => {
-    const s = S.stocks.find((x) => x.code === r.code);
-    return `<tr><td><a class="link-btn" href="#/stock/${r.code}">${r.code} ${esc(s?.name || "")}</a></td><td>${r.d}</td><td>${actChip(LB_TEXT[r.label], LB_SIDE[r.label])}</td><td class="${r.r20 >= 0 ? "pos" : "neg"}">${spct(r.r20)}</td><td>${r.guess ? LB_TEXT[r.guess] : "—"}</td></tr>`;
-  }).join("")}</tbody></table>` : `<p class="note">還沒有標註。</p>`;
+function rpHistory() {
+  const last = rpData.sessions.slice(-12).reverse();
+  $("rpList").innerHTML = last.length ? `<table class="data"><thead><tr><th>股票</th><th>期間</th><th>你</th><th>買進持有</th><th>分身</th><th>交易</th></tr></thead><tbody>${last.map((s) => {
+    const x = S.stocks.find((y) => y.code === s.code);
+    return `<tr><td><a class="link-btn" href="#/stock/${s.code}?p=custom&from=${s.d0}&to=${s.d1}">${s.code} ${esc(x?.name || "")}</a></td><td>${s.d0} ～ ${s.d1}</td><td class="${s.ret >= 0 ? "pos" : "neg"}">${spct(s.ret)}</td><td>${spct(s.bh)}</td><td>${s.twin == null ? "—" : spct(s.twin)}</td><td>${s.trades.length}</td></tr>`;
+  }).join("")}</tbody></table>` : `<p class="note">還沒有完成的局。</p>`;
 }
 
-let lbInit = false;
+let rpInit = false;
 async function renderLabel() {
-  if (!lbInit) {
-    lbInit = true;
-    $("lbUni").innerHTML = LOW_UNIS.map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
-    $("lbUni").onchange = (e) => { lbState.uni = e.target.value; lbState.cur = null; renderLabel(); };
-    $("lbFocus").onchange = (e) => { lbState.focus = e.target.value; };
-    $("lbBlind").onchange = (e) => { lbState.blind = e.target.checked; lbRender(); };
-    $("lbActions").querySelectorAll("[data-lb]").forEach((b) => (b.onclick = () => lbAnswer(b.dataset.lb)));
-    $("lbNext").onclick = async () => { await lbNew(); lbRender(); lbRecent(); };
-    $("lbSkip").onclick = async () => { await lbNew(); lbRender(); };
-    document.querySelectorAll("[data-z]").forEach((b) => (b.onclick = () => lbZoom(b.dataset.z)));
-    $("lbExport").onclick = () => {
-      const blob = new Blob([JSON.stringify({ version: 1, features: LB_FEATS, labels: lbData }, null, 1)], { type: "application/json" });
+  if (!rpInit) {
+    rpInit = true;
+    $("rpUni").innerHTML = LOW_UNIS.map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
+    $("rpLen").innerHTML = RP_LENS.map(([k, t]) => `<option value="${k}" ${k === rp.len ? "selected" : ""}>${t}</option>`).join("");
+    $("rpUni").onchange = (e) => { rp.uni = e.target.value; };
+    $("rpLen").onchange = (e) => { rp.len = +e.target.value; };
+    $("rpBlind").onchange = (e) => { rp.blind = e.target.checked; };
+    $("rpNew").onclick = rpNewGame;
+    $("rpBuy").onclick = () => rpAct("buy");
+    $("rpSell").onclick = () => rpAct("sell");
+    $("rpNext").onclick = () => rpAct("next");
+    $("rpFF5").onclick = () => rpAct("ff5");
+    $("rpFF20").onclick = () => rpAct("ff20");
+    $("rpEnd").onclick = () => rpEnd(false);
+    document.querySelectorAll("[data-z]").forEach((b) => (b.onclick = () => rpZoom(b.dataset.z)));
+    $("rpExport").onclick = () => {
+      const blob = new Blob([JSON.stringify({ ...rpData, features: RP_FEATS, hold_features: RP_HOLD }, null, 1)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `kdj_macd_labels_${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `kdj_macd_replay_${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
     };
-    $("lbImport").onchange = async (e) => {
+    $("rpImport").onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
-        const got = JSON.parse(await file.text()).labels || [];
-        const seen = new Set(lbData.map((r) => `${r.code}|${r.d}|${r.ts}`));
-        lbData.push(...got.filter((r) => r.f && r.label && !seen.has(`${r.code}|${r.d}|${r.ts}`)));
-        lbData.sort((a, b) => a.ts - b.ts);
-        lbSave(); lbRetrain(); lbRenderSide(); lbRecent();
+        const got = JSON.parse(await file.text()).sessions || [];
+        const seen = new Set(rpData.sessions.map((s) => s.id));
+        rpData.sessions.push(...got.filter((s) => s.days && !seen.has(s.id)));
+        rpData.sessions.sort((a, b) => a.id - b.id);
+        rpSave(); rpTrain(); rpSide(); rpHistory();
       } catch { alert("無法讀取這個檔案"); }
       e.target.value = "";
     };
-    $("lbClear").onclick = () => {
-      if (!confirm(`確定要刪除這台裝置上的 ${lbData.length} 筆標註嗎？（建議先匯出）`)) return;
-      lbData = []; lbSave(); lbRetrain(); lbRenderSide(); lbRecent();
+    $("rpClear").onclick = () => {
+      if (!confirm(`確定要刪除這台裝置上的 ${rpData.sessions.length} 局紀錄嗎？（建議先匯出）`)) return;
+      rpData.sessions = []; rpSave(); rpTrain(); rpSide(); rpHistory();
     };
     addEventListener("keydown", (e) => {
-      if (state.tab !== "label" || e.target?.closest?.("input, select, textarea, button") || e.ctrlKey || e.metaKey || e.altKey) return;
-      const k = e.key.toLowerCase();
-      if (!lbState.cur?.answered && ({ b: "buy", 1: "buy", h: "hold", 2: "hold", s: "sell", 3: "sell" })[k]) lbAnswer({ b: "buy", 1: "buy", h: "hold", 2: "hold", s: "sell", 3: "sell" }[k]);
-      else if (lbState.cur?.answered && (k === "enter" || k === "n")) $("lbNext").click();
+      if (state.tab !== "label" || e.target?.closest?.("input, select, textarea") || e.ctrlKey || e.metaKey || e.altKey) return;
+      const k = e.key.toLowerCase(), g = rp.g;
+      if (!g || (!g.ended && e.target?.closest?.("button") && (k === "enter" || k === " "))) return; // a focused button handles these itself
+      if (g.ended) { if (k === "enter") { e.preventDefault(); rpNewGame(); } return; }
+      const map = { b: "buy", s: "sell", arrowright: "next", n: "next", " ": "next", f: "ff5", g: "ff20" };
+      if (map[k]) { e.preventDefault(); rpAct(map[k]); }
+      else if (k === "e") rpEnd(false);
     });
-    lbRetrain();
+    rpTrain();
   }
-  if (!lbState.cur) await lbNew();
+  if (!rp.g) await rpNewGame();
+  else rpRebuild(); // the charts were sized while the tab was hidden (or never built if the tab was left mid-load)
   if (state.tab !== "label") return;
-  lbRender();
-  lbRenderSide();
-  lbRecent();
+  rpRender();
+  rpSide();
+  rpHistory();
 }
 
 // ---------- rule lab ----------
@@ -1722,7 +1824,7 @@ function initTheme() {
     document.documentElement.dataset.theme = next;
     try { localStorage.setItem("theme", next); } catch {}
     if (state.tab === "stock") renderStock();
-    if (state.tab === "label") lbRender();
+    if (state.tab === "label") rpRebuild();
   };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.tab === "stock") renderStock(); });
 }
