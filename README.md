@@ -1,24 +1,21 @@
-# 台灣50 策略實驗室
+# 台灣50 策略實驗室：KDJ／MACD
 
 **網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可）
+- [低點排行](https://roxign.github.io/stock/#/low)（首頁）：每天收盤後，依 KDJ 與 MACD 有多低排序 50 檔、另 55 檔代表股與 ETF，附狀態標籤、你的「同步翻揚」買點與觸發價，以及歷史上同樣低點之後的表現
 - [今日訊號](https://roxign.github.io/stock/#/signals)：每個策略在最新收盤後的買賣決定（下一個交易日開盤執行）、明日收盤的觸發價（目標價）、匯率與利差風險提示、各策略過去買賣點的準確度
 - [個股回測](https://roxign.github.io/stock/#/stock/2330)：選一檔股票，看歷史買賣點、當日訊號、觸發價線與各策略績效
 - [規則實驗室](https://roxign.github.io/stock/#/lab)：自己組合 KDJ／MACD／均線的買進、賣出條件與停損，馬上在每一檔股票上回測、看交叉驗證，並匯出 MultiCharts 程式碼
 
-以元大台灣50（0050）的 50 檔成分股、另外 55 檔代表股（開發時沒用過的股票，用來檢驗策略），以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究多種交易策略（可做多、也可依台灣融券規則放空），並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
+以元大台灣50（0050）的 50 檔成分股、另外 55 檔代表股（開發時沒用過的股票，用來檢驗策略），以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究以 **KDJ 與 MACD** 為核心的交易策略，並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
 
-**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)；買賣訊號與通知：[research/signals.md](research/signals.md)；匯率與利差：[research/macro_fx_rates.md](research/macro_fx_rates.md)
+**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)；低點排行榜：[research/low_points.md](research/low_points.md)；買賣訊號與通知：[research/signals.md](research/signals.md)；匯率與利差：[research/macro_fx_rates.md](research/macro_fx_rates.md)
 
-- 研究方向（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
-  - `kdj_macd_rule` — KDJ + MACD 規則型
-  - `kdj_macd_rebound` — KDJ 與 MACD 同步翻揚買進、轉弱賣出（含停損）
-  - `kdj_macd_lab` — 規則實驗室：規則引擎（`stocklab/rules.py`，網頁版 `docs/rules.js`）、6,930 條 KDJ＋MACD 規則的系統搜尋（`search.py`），`rules.json` 內的規則會成為正式策略
-  - `kdj_macd_dl` — KDJ + MACD 結合小型深度學習模型
-  - `dl_position`、`dl_revenue_flow`、`dl_market_state`、`dl_cross_stock`、`dl_trend_labels` — 深度學習第二輪（直接輸出部位、月營收＋籌碼、大盤狀態、跨股注意力、趨勢標籤），文獻回顧見 `research/dl_literature.md`
-  - `trend` — 趨勢追蹤
-  - `mean_reversion` — 均值回歸
-  - `long_short` — 多空策略（台灣融券規則，見 `research/short_rules.md`）
-  - `multi_asset` — 0050／黃金／美債／石油的多資產配置（投資組合層級，見 `research/etf_data.md`）
+- 策略（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
+  - `kdj_macd_rebound` — 你的規則：KDJ 與 MACD 在零軸下同步翻揚買進、零軸上同步轉弱賣出（10% 停損）；以及「MACD 死叉才賣」版本
+  - `kdj_macd_rule` — MACD 趨勢＋KDJ 三線超賣反彈
+  - `kdj_macd_lab` — 規則實驗室：規則引擎（`stocklab/rules.py`，網頁版 `docs/rules.js`）、6,930 條 KDJ＋MACD 規則的系統搜尋（`search.py`）；`rules.json` 內的規則會成為正式策略（目前是搜尋第一名，當作對照組）
+  - `kdj_macd_dl` — KDJ＋MACD＋小型深度學習（MLP）半倉底倉版
+- 2026-10-12 瘦身：移除了趨勢追蹤、均值回歸、多空與跨資產、深度學習第二輪等非 KDJ／MACD 的策略。完整版本保留在 git 標籤 `all-strategies-2026-10-12`（`git checkout all-strategies-2026-10-12` 可取回），當時的比較結果見 `research/signals.md`、`research/diagnosis.md`。
 
 ## 回測方法
 
@@ -52,13 +49,13 @@
 
 ## 每日訊號與通知
 
-收盤後執行 `daily_update.py`：下載最新資料 → 重算所有策略的部位 → 產生訊號（`stocklab/signals.py`，輸出 `docs/data/signals.json`）→ 重建網頁資料；加 `--push` 會提交並推送到 GitHub Pages。
+收盤後執行 `daily_update.py`：下載最新資料 → 重算所有策略的部位 → 產生訊號與低點排行榜（`stocklab/signals.py`、`stocklab/screen.py`，輸出 `docs/data/signals.json`、`docs/data/low.json`）→ 重建網頁資料；加 `--push` 會提交並推送到 GitHub Pages。
 
 - **委託**：策略在收盤時決定部位，回測也在隔天開盤成交，所以「今天收盤的決定」就是明天開盤的委託（買進、加碼、賣出、減碼、放空、回補）。
-- **觸發價（目標價）**：只用該股自身價格決定的策略，會在 ±10% 漲跌幅內逐一假設明日收盤價重算，找出「明日收盤到多少就會出現買進／賣出（含停損）」；深度學習、跨股票與多資產策略無法事先算出。
-- **訊號品質**：每個策略過去買點、賣點之後 5／20 個交易日的超額漲跌、上漲比例、勝率，分樣本內、樣本外、50 檔、代表股、ETF。
+- **觸發價（目標價）**：規則型策略會在 ±10% 漲跌幅內逐一假設明日收盤價重算，找出「明日收盤到多少就會出現買進／賣出（含停損）」；深度學習版本無法事先算出。
+- **訊號品質**：每個策略過去買點、賣點之後 5／20 個交易日的超額漲跌、上漲比例、勝率，分樣本內、樣本外、50 檔、代表股。
 - **通知文字**：網頁「今日訊號」頁最下方可複製；Python 端 `stocklab.signals.digest()` 產生相同內容，之後可接 LINE、Email、Telegram 等管道。
-- FinMind 未註冊每小時約 300 次請求，每日更新約 400 次，會自動等待；到 FinMind 免費註冊後把 token 設為環境變數 `FINMIND_TOKEN` 可加快。
+- 每日更新只需要股價、大盤與匯率資料；Yahoo 晚一天時用 FinMind 補（約 120 次請求，低於未註冊每小時約 300 次的上限）。
 
 ## 使用方式
 
@@ -67,7 +64,7 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 .venv/Scripts/python daily_update.py                                      # 每日：資料 → 部位 → 訊號 → 網頁（--push 推送）
 .venv/Scripts/python evaluate.py --family kdj_macd_rule --periods is,oos   # 單一方向的排行（含 50 檔與代表股）
-.venv/Scripts/python evaluate.py --family trend --controls --portfolio    # 加上對照組與投資組合計分板
+.venv/Scripts/python evaluate.py --family kdj_macd_rebound --controls --portfolio  # 加上對照組與投資組合計分板
 .venv/Scripts/python -m strategies.kdj_macd_lab.search                   # 系統搜尋 KDJ＋MACD 規則組合
 .venv/Scripts/python build_site.py --cached                              # 用已算好的部位重建網頁資料
 .venv/Scripts/python -m http.server 8765 -d docs                         # 本機預覽 http://localhost:8765
@@ -84,9 +81,10 @@ python -m venv .venv
 
 ```
 stocklab/        共用框架：成分股與代表股、資料下載與清理、指標、回測引擎、對照組、投資組合、試驗紀錄、
-                 signals.py（每日訊號、觸發價、訊號品質）、macro.py（匯率與聯準會／日銀利率）
-strategies/      各研究方向的策略（_example 為範本）
-research/        跨方向的研究：深度學習文獻回顧、資料來源、試驗紀錄
+                 signals.py（每日訊號、觸發價、訊號品質）、screen.py（低點排行榜）、rules.py（規則實驗室引擎）、
+                 macro.py（匯率與聯準會／日銀利率）
+strategies/      KDJ／MACD 策略（新增規則：加進 strategies/kdj_macd_lab/rules.json）
+research/        研究筆記與試驗紀錄（含已移除策略當時的研究）
 evaluate.py      在終端機印出策略 vs 基準的排行（不改動網頁）
 build_site.py    執行全部策略並輸出 docs/data/
 daily_update.py  每日更新：資料 → 部位 → 訊號 → 網頁（→ git push）

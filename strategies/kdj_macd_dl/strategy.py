@@ -25,40 +25,14 @@ def floor_from(signals):
     return out
 
 
-def gate_from(signals):
-    out = {}
-    for code, sig in signals.items():
-        base = sig["base"]
-        strong = sig["ps"] >= sig["q_hi"]
-        weak = sig["ps"] < sig["q_lo"]
-        pos = np.where((base == 1) | strong, 1.0, np.where(weak, 0.0, 0.5))
-        out[code] = pd.Series(np.where(_ok(sig), pos, base), index=sig.index)  # fallback: rule only
-    return out
-
-
 def dl_floor(data):
     """0.5 core position; 1.0 when the weekly KDJ+MACD rule is long OR the MLP rates the stock relatively strong."""
     return floor_from(core.cached_walk_forward(data)[0])
 
 
-def dl_gate(data):
-    """1.0 when rule long or MLP strong; 0 when rule flat AND MLP weak; else 0.5."""
-    return gate_from(core.cached_walk_forward(data)[0])
-
-
 def cv_floor(data, folds):
     """Purged k-fold CV of dl_floor (evaluate.py --cv): each fold traded with a model trained without it. Not tradable."""
     return floor_from(core.cached_purged_cv(data, folds)[0])
-
-
-def cv_gate(data, folds):
-    """Purged k-fold CV of dl_gate (evaluate.py --cv): each fold traded with a model trained without it. Not tradable."""
-    return gate_from(core.cached_purged_cv(data, folds)[0])
-
-
-def base_rule(data):
-    """The KDJ+MACD rule both DL variants build on, without any model (for the DL-vs-rule comparison)."""
-    return {code: pd.Series(core.base_rule(core.indicator_frame(df)), index=df.index) for code, df in data.items()}
 
 
 _RULE = (
@@ -126,43 +100,5 @@ STRATEGIES = [
         "multicharts": "multicharts/kdj_macd_dl_floor.txt",
         "positions": dl_floor,
         "cv_positions": cv_floor,
-    },
-    {
-        "id": "kdj_macd_dl_gate",
-        "label": "KDJ+MACD+MLP 三段部位",
-        "family": "KDJ+MACD+深度學習",
-        "description": (
-            "**規則**：週線等效 KDJ+MACD 規則為持有，**或** MLP 判斷相對強（≥ 第 40 百分位）→ 部位 1.0；"
-            "規則空手 **且** MLP 判斷相對弱（< 第 20 百分位）→ 部位 0（空手）；其他情況 → 0.5。\n\n"
-            "**想法**：MLP 扮演『否決賣訊』的角色——KDJ+MACD 規則空手時，只有相對弱勢的股票才真正出場，相對強勢的股票續抱。\n"
-            "結果：樣本內 CAGR 9.5% 幾乎追平買進持有（9.6%）、MDD 少 2.6 個百分點；樣本外 29.5% 對 35.7%，Sharpe 1.04 對 1.10。"
-            "樣本內這是 DL 相對控制組最明顯的地方（別檔訊號 CAGR 7.7–8.1%），但樣本外控制組為 25.4–30.1%，優勢不穩定。\n\n"
-            "**交叉驗證（8 折，purged）**：方法同半倉底倉版（每折由沒看過該折的模型交易，purge 標籤重疊樣本 + 60 根 K 棒 embargo）。"
-            "Sharpe 0/8 折勝過買進持有（空頭的 2010–11、2022–23 接近持平：0.04 對 0.05、0.49 對 0.51），MDD 6/8 折較小；"
-            "對別檔訊號控制組 5/8 折、對沒有模型的「規則 + 底倉」1/8 折，與控制組無法區分。這是穩健性檢查，不是可交易的績效。\n"
-            + _RESULTS + _COMMON
-        ),
-        "multicharts": "multicharts/kdj_macd_dl_gate.txt",
-        "positions": dl_gate,
-        "cv_positions": cv_gate,
-    },
-    {
-        "id": "kdj_macd_dl_base",
-        "label": "週KDJ+MACD 基礎規則（無 DL）",
-        "family": "KDJ+MACD+深度學習",
-        "description": (
-            "上面兩個深度學習版本所依附的基礎規則，**沒有任何模型**，用來對照 DL 到底有沒有加分。\n\n"
-            + _RULE +
-            "\n**KDJ 的用法**：教科書上 J < 0 代表超賣、J > 100 代表超買。注意 J − D = 3(K − D)，所以「J 穿越 D」「J 穿越 K」和「K 穿越 D」是同一個事件；"
-            "J 線獨有的資訊只有「超出 0~100 區間」與「J 自己的轉折」。這條規則用的就是前者，MACD 則負責在漲勢仍在加速時否決超買賣訊。\n\n"
-            "**為什麼選這組**：樣本內測試了 15 種 KDJ/MACD 規則 × 2~4 種速度（日線 ×1 到週線等效 ×5）。日線速度的規則交易太頻繁，成本吃光報酬；"
-            "週線等效的這條規則樣本內 Sharpe 0.40（上一輪 K/D 規則 0.32），交易約每年 1 次。門檻用教科書的 0 / 100，沒有最佳化。\n\n"
-            "**注意**：樣本內分成前後兩半時，這條規則只在前半段贏 K/D 規則（0.39 對 0.27），後半段輸（0.36 對 0.40）；"
-            "樣本外它只有約 40% 時間持股，在 2021–2026 的大多頭中 CAGR 11.2%、Sharpe 0.66，明顯輸給買進持有，也輸給上一輪 K/D 規則公布的樣本外結果（19.5%、0.86，舊版資料）。"
-            "單獨使用並不建議，它的用途是當作 DL 版本的比較基準。\n"
-            + _RESULTS
-        ),
-        "multicharts": "multicharts/kdj_macd_dl_base.txt",
-        "positions": base_rule,
     },
 ]

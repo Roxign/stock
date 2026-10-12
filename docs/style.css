@@ -296,6 +296,18 @@ table.data tr.dim td { opacity: 0.5; }
 .chart-fx { height: 160px; }
 .sig-panel { margin-top: 12px; }
 .table-wrap.flat { border: 0; border-radius: 0; background: transparent; }
+/* low-point ranking */
+table.data.low td { vertical-align: middle; }
+table.data.low td:nth-child(2), table.data.low th:nth-child(2) { text-align: left; }
+table.data.low td.wrap { min-width: 170px; white-space: normal; text-align: left; font-size: 12px; line-height: 1.4; }
+.score { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; }
+.score b { width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.bar { flex: 1; height: 8px; min-width: 60px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.tag { display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; color: var(--ink-2); background: var(--surface-2); }
+.tag.hot { color: #fff; background: var(--up); font-weight: 600; }
+.tag.turn { color: var(--up); background: color-mix(in oklab, var(--up) 12%, transparent); }
+
 /* rule lab */
 .lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
 .lab-side { padding: 10px 12px 12px; }

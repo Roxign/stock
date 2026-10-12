@@ -4,11 +4,11 @@
   python daily_update.py --push           # also commit and push the website data (GitHub Pages)
   python daily_update.py --only signals,site
   python daily_update.py --skip data
-  python daily_update.py --fast           # keep the deep-learning positions (retraining them takes about an hour)
+  python daily_update.py --fast           # keep the KDJ+MACD+DL positions (skips retraining the MLP, ~2 minutes)
 
 Run after 14:30 Taipei (bars dated today are dropped before that). Yahoo can lag a day; stocklab.data.top_up fills
-the gap from the exchange quotes on FinMind. FinMind allows ~300 requests an hour without an account (600 with a
-free token in the FINMIND_TOKEN environment variable); a daily run makes about 400, so it may pause for the limit.
+the gap from the exchange quotes on FinMind (about 120 requests on a day Yahoo lags, well under FinMind's ~300 an
+hour without an account).
 """
 
 import argparse
@@ -19,16 +19,15 @@ import time
 from stocklab.data import ROOT
 
 STAGES = ["data", "positions", "signals", "site"]
-DL_FAMILIES = {"kdj_macd_dl", "dl_position", "dl_revenue_flow", "dl_market_state", "dl_cross_stock", "dl_trend_labels"}
+DL_FAMILIES = {"kdj_macd_dl"}
 
 
 def stage_data():
-    from stocklab import data, etf, macro, shortrules
+    from stocklab import data, etf, macro
     from stocklab import external as ext
-    from stocklab.universe import CODES
 
     data.download(data.ALL_CODES)
-    ext.update_recent(codes=CODES)
+    ext.update_recent(stocks=False)  # market series only (TAIEX calendar, USD/TWD); per-stock chips are unused
     latest = ext.last_session()
     added = data.top_up(data.ALL_CODES, until=latest)
     print(f"latest session {latest.date()}; topped up from FinMind: {len(added)} codes", flush=True)
@@ -36,7 +35,6 @@ def stage_data():
     if stale:
         print(f"  still behind {latest.date()}: {stale}", flush=True)
     etf.download_etfs(refresh=True)
-    shortrules.update_notes(data.ALL_CODES + etf.CODES)
     macro.download_policy(refresh=True)
 
 
@@ -44,15 +42,16 @@ def stage_positions(fast=False):
     from stocklab.runner import discover, load_everything, refresh_positions
 
     strategies = discover()
-    if fast:  # their signals then show the date their positions end ("部位停在 …")
+    if fast:  # its signals then show the date its positions end ("部位停在 …")
         strategies = [s for s in strategies if s["family_dir"] not in DL_FAMILIES]
     refresh_positions(strategies, load_everything())
 
 
 def stage_signals():
-    from stocklab import signals
+    from stocklab import screen, signals
 
     signals.build()
+    screen.build()
 
 
 def stage_site():

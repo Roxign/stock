@@ -26,10 +26,10 @@ from stocklab.universe import CODES as STOCK_CODES, DATA_DATE, EXTRA_CODES, EXTR
 DOCS = ROOT / "docs"
 PERIODS = ("full", "is", "oos")
 FOLDS = cv.FOLDS
-UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "extra": ("代表股（另 55 檔）", EXTRA_CODES),
-             "etfs": ("ETF（0050、黃金、石油、美債）", ETF_CODES)}
-DOCS_COPIED = ("diagnosis.md", "dl_literature.md", "data_sources.md", "short_rules.md", "etf_data.md", "macro_fx_rates.md",
-               "signals.md")
+# Leaderboards per universe. The ETFs stay in the data (stock pages, rule lab, low-point ranking) but no published
+# strategy trades them since the 2026-10-12 slim-down, so they get no leaderboard.
+UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "extra": ("代表股（另 55 檔）", EXTRA_CODES)}
+DOCS_COPIED = ("diagnosis.md", "macro_fx_rates.md", "signals.md", "low_points.md")
 
 
 def latest_block(sid, board, cv_rows, cv_meta, extra_board=None, data_end=None):

@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>台灣50 策略實驗室</title>
+  <title>KDJ／MACD 低點排行榜・台灣50 策略實驗室</title>
   <meta name="description" content="台灣50 與代表股交易策略：每日買賣訊號與觸發價、KDJ/MACD 規則、深度學習、趨勢追蹤、均值回歸回測，與買進持有、定期定額比較。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=9"></script>
 </head>
 <body>
   <header class="top">
@@ -18,6 +18,7 @@
       <span class="muted" id="dataDate"></span>
     </div>
     <nav class="tabs">
+      <a href="#/low" data-tab="low">低點排行</a>
       <a href="#/signals" data-tab="signals">今日訊號</a>
       <a href="#/overview" data-tab="overview">總覽</a>
       <a href="#/stock" data-tab="stock">個股回測</a>
@@ -31,6 +32,25 @@
 
   <main>
     <p id="loading" class="muted">載入資料中…</p>
+
+    <section id="view-low" hidden>
+      <div class="stock-head">
+        <h2>KDJ／MACD 低點排行榜</h2>
+        <span class="muted" id="lowAsof"></span>
+      </div>
+      <p class="note">把每一檔股票的 KDJ 與 MACD 現在有多低排成一張表。<strong>低點分數</strong> 0–100，越高代表越低：一半看 KDJ（100 −（K＋D）÷ 2），一半看 MACD（DIF 佔股價的比例在近 500 個交易日中的位置，100 = 兩年來最低），不同價位的股票可以直接比較。
+      <button type="button" class="link-btn doc-link" data-doc="research/low_points.md" data-title="KDJ／MACD 低點排行榜說明">說明與歷史驗證</button></p>
+      <div class="filters">
+        <div class="seg" id="lowUniverse" role="group" aria-label="標的"></div>
+        <div class="seg" id="lowFilter" role="group" aria-label="條件"></div>
+      </div>
+      <p class="note" id="lowCounts"></p>
+      <div class="table-wrap"><table id="lowTable" class="data low"></table></div>
+
+      <h2>低點分數準不準？</h2>
+      <p class="note">2010 年以來每一檔、每一天的低點分數，對照之後 20 個交易日（隔天開盤買進）的漲跌，減去同一檔的平常表現＝<strong>超額漲跌</strong>。分數很高（90 以上）的日子之後平均比平常好，中間分數則沒有優勢；這是統計上的傾向，個別股票仍可能續跌。</p>
+      <div class="table-wrap"><table id="lowBands" class="data"></table></div>
+    </section>
 
     <section id="view-signals" hidden>
       <div class="stock-head">
@@ -94,9 +114,6 @@
         <strong>為什麼策略贏不了買進持有？</strong>主因不是手續費，而是策略「持股比較少」，而技術指標幾乎沒有擇時能力；空手的日子股票多半還在漲，只有在空頭年空手才真的避開下跌。另外，這 50 檔是今天的成分股（事後挑出的贏家），讓買進持有的基準特別高。
         <span class="callout-links">
           <button type="button" class="btn" data-doc="research/diagnosis.md" data-title="問題診斷與改進方向">診斷報告</button>
-          <button type="button" class="btn" data-doc="research/dl_literature.md" data-title="深度學習交易策略文獻回顧">深度學習文獻回顧</button>
-          <button type="button" class="btn" data-doc="research/short_rules.md" data-title="台灣融券（放空）規則">放空規則</button>
-          <button type="button" class="btn" data-doc="research/etf_data.md" data-title="黃金、石油、美債 ETF 資料">ETF 資料說明</button>
           <button type="button" class="btn" data-doc="research/macro_fx_rates.md" data-title="匯率與美日利差研究">匯率與利差研究</button>
           <button type="button" class="btn" data-doc="research/signals.md" data-title="買賣訊號與通知說明">訊號與通知</button>
         </span>
@@ -111,7 +128,7 @@
 
       <section id="pfSection">
         <h2>投資組合計分板（同一個帳戶）</h2>
-        <p class="note">把策略放在同一個帳戶回測（逐檔策略每檔各分 1/N 資金；多資產策略直接給權重），和真正可投資的 <strong>0050 買進持有、0050 定期定額</strong>比較。「50 檔等權買進持有」用的是今天的成分股，有倖存者偏差，只能當參考。上方「股票／ETF」切換決定列出哪一類策略。</p>
+        <p class="note">把策略放在同一個帳戶回測（50 檔每檔各分 1/50 資金），和真正可投資的 <strong>0050 買進持有、0050 定期定額</strong>比較。「50 檔等權買進持有」用的是今天的成分股，有倖存者偏差，只能當參考。</p>
         <div class="table-wrap"><table id="pfTable" class="data"></table></div>
         <div class="panel">
           <div class="pane-legend" id="lgPf"></div>

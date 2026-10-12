@@ -37,9 +37,7 @@ GRID = np.round(np.linspace(-0.10, 0.10, 41), 4)  # next close vs last close, 0.
 BISECT = 8                 # 0.5% / 2^8 = 0.002%: finer than any tick
 WINDOW = 800               # trailing bars used for trigger scans (indicators and rule states settle well within this)
 CHECK = 60                 # ...accepted only if its decisions match the full history on the last CHECK bars
-PER_STOCK_FAMILIES = {"kdj_macd_rule", "kdj_macd_rebound", "kdj_macd_lab", "trend", "mean_reversion", "long_short"}
-PER_STOCK_IDS = {"kdj_macd_dl_base"}  # the no-DL rule inside a DL family (its siblings would retrain models)
-WEIGHT_FAMILIES = {"multi_asset"}
+PER_STOCK_FAMILIES = {"kdj_macd_rule", "kdj_macd_rebound", "kdj_macd_lab"}
 HORIZONS = (5, 20)
 MIN_STEP = 0.25            # exposure change that counts as a buy / sell point in the quality statistics
 QUALITY_PERIODS = ("is", "oos")
@@ -303,9 +301,7 @@ def build(out=OUT, ids=None, verbose=True):
                 continue
             pos = pd.read_pickle(path)
             udata = universe_data(s, data, u)
-            raw = s["positions"](udata) if s["family_dir"] in PER_STOCK_FAMILIES or sid in PER_STOCK_IDS else None
-            # multi-asset strategies: their per-ETF positions only mark holdings, the weights are the actual orders
-            wts = s["weights"](udata) if s.get("weights") and s["family_dir"] in WEIGHT_FAMILIES else None
+            raw = s["positions"](udata) if s["family_dir"] in PER_STOCK_FAMILIES else None
             scanned = raw is not None and per_stock(s, udata, raw)
             meta[sid]["triggers"] |= scanned
             for c, df in udata.items():
@@ -314,7 +310,7 @@ def build(out=OUT, ids=None, verbose=True):
                     continue
                 last = min(p.index[-1], df.index[-1])
                 d = df.loc[:last]
-                tgt = bt.clean_target(wts[c] if wts is not None and c in wts else p, d.index).to_numpy()
+                tgt = bt.clean_target(p, d.index).to_numpy()
                 o, cl = d["open"].to_numpy(), d["close"].to_numpy()
                 held, cur = float(tgt[-2]), float(tgt[-1])
                 label, side = action(held, cur)

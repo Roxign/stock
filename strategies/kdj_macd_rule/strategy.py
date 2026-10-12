@@ -1,6 +1,6 @@
 """KDJ + MACD rule-based strategies (family: KDJ+MACD 規則). See RESEARCH.md for the study behind them.
 
-Both variants are long-only with 0/1 exposure, use the Taiwan-style KDJ (9,3,3; J = 3K - 2D) and MACD (12,26,9)
+The strategy is long-only with 0/1 exposure, use the Taiwan-style KDJ (9,3,3; J = 3K - 2D) and MACD (12,26,9)
 from stocklab.indicators, and decide each bar with data up to that bar's close only (the engine fills at the next open).
 
 Cross-validation hooks (stocklab/cv.py "retune" mode): each entry has `param_grid` (<= 40 combos around the published
@@ -23,7 +23,6 @@ J_HIGH, J_DAYS, D_HIGH = 100, 3, 80  # 持續超買: J > 100 for 3 bars in a row
 
 TB_DEFAULTS = {"kdj_n": KDJ_N, "macd": (MACD_FAST, MACD_SLOW, MACD_SIG), "j_low": J_LOW, "d_low": D_LOW,
                "j_high": J_HIGH, "j_days": J_DAYS, "d_high": D_HIGH}
-CZ_DEFAULTS = {"kdj_n": KDJ_N, "macd": (MACD_FAST, MACD_SLOW, MACD_SIG), "j_low": J_LOW, "j_high": J_HIGH}
 
 
 def _latch(entry, exit_):
@@ -77,21 +76,6 @@ def trend_bounce(data, kdj_n=KDJ_N, macd=(MACD_FAST, MACD_SLOW, MACD_SIG), j_low
     return out
 
 
-def classic_zone(data, kdj_n=KDJ_N, macd=(MACD_FAST, MACD_SLOW, MACD_SIG), j_low=J_LOW, j_high=J_HIGH):
-    """Textbook KDJ + MACD histogram combo: buy when J < 0 while the histogram rises;
-    sell when J > 100 while the histogram falls (defaults; other values are for cross-validation)."""
-    out = {}
-    for code, df in data.items():
-        s = _signals(df, kdj_n, macd)
-        osc = s["osc"]
-        rising = np.r_[False, osc[1:] > osc[:-1]]
-        falling = np.r_[False, osc[1:] < osc[:-1]]
-        entry = (s["j"] < j_low) & rising
-        exit_ = (s["j"] > j_high) & falling
-        out[code] = pd.Series(_latch(entry, exit_), index=df.index)
-    return out
-
-
 # ---- cross-validation grids (stocklab/cv.py "retune") ----
 # trend_bounce, 38 combos: MACD speed x bounce entry x bounce exit (36), plus KDJ 7 / 12 days at the defaults.
 #   MACD (10,22,9) / (12,26,9) / (14,30,9); entry (J, D) < (-5, 15) strict / (0, 20) published / (5, 30) loose;
@@ -105,19 +89,8 @@ TB_GRID = [
     )
 ] + [{**TB_DEFAULTS, "kdj_n": n} for n in (7, 12)]
 
-# classic_zone, 38 combos: J buy level x J sell level x KDJ days (36), plus fast / slow MACD at the defaults.
-CZ_GRID = [
-    {**CZ_DEFAULTS, "kdj_n": n, "j_low": jl, "j_high": jh}
-    for jl, jh, n in itertools.product([-10, -5, 0, 5], [90, 100, 110], [7, 9, 12])
-] + [{**CZ_DEFAULTS, "macd": m} for m in ((10, 22, 9), (14, 30, 9))]
-
-
 def build_trend_bounce(params):
     return partial(trend_bounce, **{**TB_DEFAULTS, **params})
-
-
-def build_classic_zone(params):
-    return partial(classic_zone, **{**CZ_DEFAULTS, **params})
 
 
 DESC_TREND_BOUNCE = """\
@@ -148,25 +121,6 @@ DESC_TREND_BOUNCE = """\
 - 回測使用還原權值日線、買賣手續費 0.1425%、賣出證交稅 0.3%，未計滑價。
 """
 
-DESC_CLASSIC = """\
-**一句話**：網路上最常見的 KDJ 口訣「J 值負值買、J 值破 100 賣」再加上 MACD 柱狀體確認。放在這裡當作**對照組**。
-
-**規則**（日線，收盤後判斷，隔天開盤成交，只做多，部位 0% 或 100%）
-- 進場：J < 0，且 MACD 柱狀體（OSC = DIF − 訊號線）比前一天高（綠柱縮短 / 紅柱變長）。
-- 出場：J > 100，且 MACD 柱狀體比前一天低。
-
-**參數**：KDJ 9,3,3、MACD 12,26,9、J 超賣 0 / 超買 100（口訣值，未調整）。
-
-**結果**
-- 樣本內 2010–2020：CAGR 中位數 3.2%（買進持有 9.6%）、Sharpe 0.31（0.49）、MDD −42.0%（−46.1%）、持有率約 40%、勝率 75%，只有 14% 的股票報酬勝過買進持有。
-- 樣本外 2021–2026：CAGR 中位數 11.1%（買進持有 35.7%）、Sharpe 0.72（1.10）、MDD −40.1%、持有率約 50%、勝率 100%（中位數），只有 10% 的股票勝過買進持有。
-- 若拿掉 MACD 柱狀體確認（純「J < 0 買、J > 100 賣」），樣本內每檔約交易 54 次，CAGR 中位數只剩 2.7%：J 太靈敏，一反彈就碰到 100，賣在起漲初段。
-
-**交叉驗證（8 折，每折約 2 年）**：固定參數下 8 折的 Sharpe 中位數全部輸給買進持有，連 2010–11、2014–15、2018–19、2022–23 這些弱勢折也輸（例如 2018–19 為 0.31 vs 0.65）；最大回撤 8 折都較小，只是因為持股率只有 37～57%。每折改用「其他 7 折最好的參數」（38 組）時，每折都選到賣出門檻 J > 110 —— 這時柱狀體幾乎都還在上升，賣出條件幾乎不會成立，等於「買了就不賣」的買進持有。交叉驗證的答案很直接：這套口訣的賣出規則本身就在扣分。
-
-**為什麼保留它**：讓你在每一檔股票上直接看到「勝率高 ≠ 賺得多」—— 這套規則勝率很高，但持有時間短、常在主升段之前就下車，長期報酬遠低於買進持有。它是上一輪 KD 對照組（K < 20 金叉 + 柱狀體）的 KDJ 版本，結果也差不多（樣本內 Sharpe 0.34 → 0.31）。**不建議實際使用。**
-"""
-
 STRATEGIES = [
     {
         "id": "kdj_macd_rule_trend_bounce",
@@ -177,15 +131,5 @@ STRATEGIES = [
         "positions": trend_bounce,
         "param_grid": TB_GRID,
         "build": build_trend_bounce,
-    },
-    {
-        "id": "kdj_macd_rule_classic_zone",
-        "label": "KDJ口訣＋MACD柱確認（傳統對照）",
-        "family": "KDJ+MACD 規則",
-        "description": DESC_CLASSIC,
-        "multicharts": "multicharts/kdj_macd_rule_classic_zone.txt",
-        "positions": classic_zone,
-        "param_grid": CZ_GRID,
-        "build": build_classic_zone,
     },
 ]
