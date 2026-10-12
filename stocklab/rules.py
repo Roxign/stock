@@ -10,7 +10,10 @@ Condition ids, labels and PowerLanguage templates are in docs/rule_catalog.json 
 Semantics (identical in both engines):
   mode "all"  every condition was true at least once in the last W bars (W = 1: on the same bar)
   mode "any"  at least one condition is true on the bar (W is ignored)
+  "or": [side, ...]   alternative condition groups: the side fires when its own group or any alternative fires
   no conditions on a side: that side never fires
+Divergence conditions compare today with the previous high / low = the max / min over the n bars ending GAP bars
+ago (closes for the price); saturation (鈍化) counts consecutive bars with K beyond a level.
   0/1 position decided at each bar's close, filled at the next open by the backtest engine; while flat a buy signal
   goes long; while long, exits are checked from the bar after the signal (the fill bar) on: sell signal, close below
   entry x (1 - stop%), close above entry x (1 + take%), close below the highest close since entry x (1 - trail%),
@@ -48,6 +51,28 @@ def _prev(x, n=1):
 def _turn(x, up):
     x1, x2 = _prev(x), _prev(x, 2)
     return (x > x1) & (x1 <= x2) if up else (x < x1) & (x1 >= x2)
+
+
+GAP = 5  # the "previous high / low" of the divergence conditions ends this many bars ago
+
+
+def _prev_ext(x, n, high):
+    r = pd.Series(x).rolling(int(n), min_periods=int(n))
+    return (r.max() if high else r.min()).shift(GAP).to_numpy()
+
+
+def _streak(mask):
+    out = np.zeros(len(mask))
+    run = 0
+    for i, v in enumerate(mask):
+        run = run + 1 if v else 0
+        out[i] = run
+    return out
+
+
+DIVERGENCES = {"kd_top_div", "kd_top_div_hidden", "kd_bot_div", "kd_bot_div_hidden",
+               "dif_top_div", "dif_top_div_hidden", "dif_bot_div", "dif_bot_div_hidden"}
+SATURATION = {"k_high_stuck", "high_stuck_end", "k_low_stuck", "low_stuck_end"}
 
 
 def _cross(a, b, up):
@@ -129,6 +154,20 @@ def condition(ind: Indicators, c) -> np.ndarray:
         elif cid in ("ma_rising", "ma_falling"):
             m = ind.ma(_param(c, "n"))
             out = m > _prev(m) if cid == "ma_rising" else m < _prev(m)
+        elif cid in DIVERGENCES:
+            x, n, top = (k if cid.startswith("kd") else dif), _param(c, "n"), "_top_" in cid
+            px, ix = _prev_ext(cl, n, top), _prev_ext(x, n, top)
+            if top:
+                out = (x >= ix) & (cl < px) if cid.endswith("hidden") else (cl > px) & (x < ix)
+            else:
+                out = (x <= ix) & (cl > px) if cid.endswith("hidden") else (cl < px) & (x > ix)
+        elif cid in SATURATION:
+            v, n, high = _param(c, "v"), _param(c, "n"), cid in ("k_high_stuck", "high_stuck_end")
+            st = _streak(k > v if high else k < v)
+            if cid.endswith("stuck"):
+                out = st >= n
+            else:
+                out = (k <= v if high else k >= v) & (_prev(st) >= n)
         else:
             raise KeyError(f"unknown condition {cid!r}")
     return np.asarray(out, dtype=bool)
@@ -144,6 +183,13 @@ def _recent(a, w):
 
 
 def side_signal(ind: Indicators, side, n) -> np.ndarray:
+    out = _group_signal(ind, side, n)
+    for alt in (side or {}).get("or") or []:
+        out = out | _group_signal(ind, alt, n)
+    return out
+
+
+def _group_signal(ind: Indicators, side, n) -> np.ndarray:
     conds = (side or {}).get("conds") or []
     if not conds:
         return np.zeros(n, dtype=bool)
@@ -207,15 +253,19 @@ def _fmt(c):
 
 def describe(rule) -> str:
     """One-paragraph Traditional Chinese description of a rule."""
-    def side(s, what):
+    def group(s):
         conds = (s or {}).get("conds") or []
-        if not conds:
-            return f"{what}：無（只靠出場保護）" if what == "賣出" else f"{what}：無"
         if s.get("mode", "all") == "any":
-            return f"{what}：任一符合 — " + "、".join(_fmt(c) for c in conds)
+            return "任一符合 — " + "、".join(_fmt(c) for c in conds)
         w = int(s.get("within", 1) or 1)
         when = "同一根K棒全部符合" if w == 1 else f"最近 {w} 根K棒內都出現過"
-        return f"{what}：{when} — " + "、".join(_fmt(c) for c in conds)
+        return f"{when} — " + "、".join(_fmt(c) for c in conds)
+
+    def side(s, what):
+        groups = [g for g in [s or {}] + list((s or {}).get("or") or []) if g.get("conds")]
+        if not groups:
+            return f"{what}：無（只靠出場保護）" if what == "賣出" else f"{what}：無"
+        return f"{what}：" + "；或 ".join(group(g) for g in groups)
 
     risk = [f"{label} {rule[k]:g}%" for k, label in (("stop", "收盤停損"), ("take", "收盤停利"), ("trail", "移動停損"))
             if rule.get(k)]

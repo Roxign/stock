@@ -1,5 +1,5 @@
 import { configure, periodBounds, expandTarget, simulate, simulateDca, metrics, xirr, twKdj, macd, sma, ENGINE } from "./engine.js?v=6";
-import { loadCatalog, catalog, ruleTarget, describe as ruleDescribe, encodeRule, decodeRule, powerLanguage, scanRule, quality as ruleQuality } from "./rules.js?v=1";
+import { loadCatalog, catalog, ruleTarget, describe as ruleDescribe, encodeRule, decodeRule, powerLanguage, scanRule, quality as ruleQuality } from "./rules.js?v=2";
 
 const LWC = window.LightweightCharts;
 const $ = (id) => document.getElementById(id);
@@ -321,19 +321,60 @@ const hideTip = () => ($("tip").hidden = true);
 // ---------- KDJ / MACD low-point ranking (front page) ----------
 let lowPromise = null;
 const loadLow = () => (lowPromise ??= fetch("data/low.json", FRESH).then((r) => (r.ok ? r.json() : null)).catch(() => null));
-const LOW_TAGS = { kdj_low: "KDJ 低檔", j_neg: "J < 0", macd_neg: "MACD 零軸下", k_up: "K 翻揚", osc_up: "柱狀體翻揚", rebound: "同步翻揚買點" };
-const LOW_FILTERS = [
-  ["all", "全部", () => true],
-  ["kdj", "KDJ 低檔", (r) => r.flags.includes("kdj_low")],
-  ["macd", "MACD 零軸下", (r) => r.flags.includes("macd_neg")],
-  ["both", "兩者皆低", (r) => r.flags.includes("kdj_low") && r.flags.includes("macd_neg")],
-  ["turn", "開始反彈", (r) => r.flags.includes("k_up") && r.flags.includes("osc_up")],
-  ["rebound", "同步翻揚買點", (r) => r.flags.includes("rebound")],
-];
+const LOW_TAGS = {
+  kdj_low: "KDJ 低檔", j_neg: "J < 0", macd_neg: "MACD 零軸下", k_up: "K 翻揚", osc_up: "柱狀體翻揚", rebound: "同步翻揚買點",
+  kd_bot_div: "KD 底背離", kd_bot_div_hidden: "K 回前低、價未破底", dif_bot_div: "MACD 底背離",
+  kdj_high: "KDJ 高檔", j_hi: "J > 100", macd_pos: "MACD 零軸上", k_down: "K 轉弱", osc_down: "柱狀體轉弱", weak: "同步轉弱賣點",
+  kd_top_div: "KD 頂背離", kd_top_div_hidden: "K 回前高、價未過高", dif_top_div: "MACD 頂背離",
+};
+const has = (r, ...f) => f.every((x) => r.flags.includes(x));
+const hasAny = (r, ...f) => f.some((x) => r.flags.includes(x));
+// Per side: score field, filters, tags shown, sorting, history, labels.
+const LOW_MODES = {
+  low: {
+    title: "KDJ／MACD 低點排行榜（買點）", score: "score", word: "低", days: "low_days", hist: "hist", bands: "bands", episodes: "episodes",
+    tags: ["rebound", "kdj_low", "j_neg", "macd_neg", "k_up", "osc_up", "kd_bot_div", "kd_bot_div_hidden", "dif_bot_div"],
+    hot: "rebound", turn: ["k_up", "osc_up"], stuck: "stuck_lo", stuckText: "低檔鈍化",
+    filters: [
+      ["all", "全部", () => true],
+      ["kdj", "KDJ 低檔", (r) => has(r, "kdj_low")],
+      ["macd", "MACD 零軸下", (r) => has(r, "macd_neg")],
+      ["both", "兩者皆低", (r) => has(r, "kdj_low", "macd_neg")],
+      ["turn", "開始反彈", (r) => has(r, "k_up", "osc_up")],
+      ["rebound", "同步翻揚買點", (r) => has(r, "rebound")],
+      ["div", "底背離", (r) => hasAny(r, "kd_bot_div", "kd_bot_div_hidden", "dif_bot_div")],
+    ],
+    sorts: [["score", "低點分數"], ["chg", "今日跌幅"], ["days", "低檔天數"], ["code", "代號"]],
+    chgSort: (a, b) => a.chg - b.chg,
+    note: "把每一檔股票的 KDJ 與 MACD 現在有多低排成一張表。<strong>低點分數</strong> 0–100，越高代表越低：一半看 KDJ（100 −（K＋D）÷ 2），一半看 MACD（DIF 佔股價的比例在近 500 個交易日中的位置，100 = 兩年來最低），不同價位的股票可以直接比較。",
+    bandsTitle: "低點分數準不準？",
+    bandsNote: "2010 年以來每一檔、每一天的低點分數，對照之後 20 個交易日（隔天開盤買進）的漲跌，減去同一檔的平常表現＝<strong>超額漲跌</strong>。只有 90 分以上的極端低點之後平均比平常好；低檔鈍化（K 連續 3 天 < 20）之後通常還會弱一段，個別股票仍可能續跌。",
+    epText: "剛同時進入低檔",
+  },
+  high: {
+    title: "KDJ／MACD 高點排行榜（賣點・做空）", score: "score_hi", word: "高", days: "high_days", hist: "hist_hi", bands: "bands_hi", episodes: "episodes_hi",
+    tags: ["weak", "kdj_high", "j_hi", "macd_pos", "k_down", "osc_down", "kd_top_div", "kd_top_div_hidden", "dif_top_div"],
+    hot: "weak", turn: ["k_down", "osc_down"], stuck: "stuck_hi", stuckText: "高檔鈍化",
+    filters: [
+      ["all", "全部", () => true],
+      ["kdj", "KDJ 高檔", (r) => has(r, "kdj_high")],
+      ["macd", "MACD 零軸上", (r) => has(r, "macd_pos")],
+      ["both", "兩者皆高", (r) => has(r, "kdj_high", "macd_pos")],
+      ["turn", "開始轉弱", (r) => has(r, "k_down", "osc_down")],
+      ["weak", "同步轉弱賣點", (r) => has(r, "weak")],
+      ["div", "頂背離", (r) => hasAny(r, "kd_top_div", "kd_top_div_hidden", "dif_top_div")],
+      ["shortable", "可融券", (r) => r.short === "ok"],
+    ],
+    sorts: [["score", "高點分數"], ["chg", "今日漲幅"], ["days", "高檔天數"], ["code", "代號"]],
+    chgSort: (a, b) => b.chg - a.chg,
+    note: "賣點與做空的檢視：把 KDJ 與 MACD 現在有多高排成一張表。<strong>高點分數</strong> 0–100，越高代表越高：一半看 KDJ（（K＋D）÷ 2），一半看 MACD（DIF 佔股價的比例在近 500 個交易日中的位置，100 = 兩年來最高）。<strong>注意：歷史上高點之後平均反而續漲（高檔鈍化），在高點做空平均是虧錢的</strong>；這裡適合用來找持股的出場時機，放空請搭配停損。",
+    bandsTitle: "高點分數之後的走勢（做空看下跌比例）",
+    bandsNote: "同樣的方法看高點：2010 年以來，高點分數 80 以上的日子之後 20 個交易日，平均反而比平常<strong>多漲</strong>（強勢股常常繼續強勢）；只有少數股票在高點之後轉弱。做空的人要特別小心。",
+    epText: "剛同時進入高檔",
+  },
+};
 const LOW_UNIS = [["all", "全部"], ["stock", "50 檔"], ["extra", "代表股"], ["etf", "ETF"]];
-const lowState = { uni: "all", filter: "all", sort: "score" };
-
-const LOW_SORTS = [["score", "低點分數"], ["chg", "今日跌幅"], ["days", "低檔天數"], ["code", "代號"]];
+const lowState = { mode: "low", uni: "all", filter: "all", sort: "score" };
 const SP = { w: 240, h: 108, top: 11, priceH: 34, kdY: 62, kdH: 20, mY: 88, mH: 18 };
 
 // Thumbnail of the last sessions: close line with the window's high / low marked, KD with 20 / 80 guides,
@@ -372,45 +413,57 @@ async function renderLow() {
   const L = await loadLow();
   if (state.tab !== "low") return;
   if (!L) { $("lowAsof").textContent = "尚未產生排行資料（執行 python daily_update.py）"; return; }
+  const M = LOW_MODES[lowState.mode];
+  if (!M.filters.some((f) => f[0] === lowState.filter)) lowState.filter = "all";
+  $("lowTitle").textContent = M.title;
+  $("lowNote").innerHTML = M.note;
+  $("lowBandsTitle").textContent = M.bandsTitle;
+  $("lowBandsNote").innerHTML = M.bandsNote;
   $("lowAsof").textContent = `${L.asof} 收盤後・更新於 ${L.generated.replace("T", " ")}`;
+  seg($("lowMode"), [["low", "買點：低點排行"], ["high", "賣點・做空：高點排行"]], lowState.mode, (v) => { lowState.mode = v; lowState.filter = "all"; renderLow(); });
   seg($("lowUniverse"), LOW_UNIS, lowState.uni, (v) => { lowState.uni = v; renderLow(); });
-  seg($("lowFilter"), LOW_FILTERS.map(([k, t]) => [k, t]), lowState.filter, (v) => { lowState.filter = v; renderLow(); });
-  seg($("lowSort"), LOW_SORTS, lowState.sort, (v) => { lowState.sort = v; renderLow(); });
+  seg($("lowFilter"), M.filters.map(([k, t]) => [k, t]), lowState.filter, (v) => { lowState.filter = v; renderLow(); });
+  seg($("lowSort"), M.sorts, lowState.sort, (v) => { lowState.sort = v; renderLow(); });
   const inUni = L.rows.filter((r) => lowState.uni === "all" || r.kind === lowState.uni);
-  const count = (k) => inUni.filter(LOW_FILTERS.find((f) => f[0] === k)[2]).length;
-  $("lowCounts").innerHTML = `今天：KDJ 低檔 <b>${count("kdj")}</b> 檔・MACD 零軸下 <b>${count("macd")}</b> 檔・兩者皆低 <b>${count("both")}</b> 檔・開始反彈 <b>${count("turn")}</b> 檔・符合你的同步翻揚買點 <b>${count("rebound")}</b> 檔（共 ${inUni.length} 檔）`;
+  const count = (k) => inUni.filter(M.filters.find((f) => f[0] === k)[2]).length;
+  $("lowCounts").innerHTML = "今天：" + M.filters.slice(1).map(([k, t]) => `${t} <b>${count(k)}</b> 檔`).join("・") + `（共 ${inUni.length} 檔）`;
 
-  const test = LOW_FILTERS.find((f) => f[0] === lowState.filter)[2];
+  const test = M.filters.find((f) => f[0] === lowState.filter)[2];
   const by = {
-    score: (a, b) => b.score - a.score,
-    chg: (a, b) => a.chg - b.chg,
-    days: (a, b) => b.low_days - a.low_days || b.score - a.score,
+    score: (a, b) => b[M.score] - a[M.score],
+    chg: M.chgSort,
+    days: (a, b) => b[M.days] - a[M.days] || b[M.score] - a[M.score],
     code: (a, b) => a.code.localeCompare(b.code),
   }[lowState.sort];
   const rows = inUni.filter(test).sort(by);
   const histCell = (h) => {
     if (!h) return "—";
     if (!h.n) return `<span class="muted">2010 年後沒出現過</span>`;
-    return `${h.n} 次，平均 <span class="${h.mean >= 0 ? "pos" : "neg"}">${spct(h.mean)}</span><br><span class="muted">平常 ${spct(h.base)}；上漲 ${pct(h.up, 0)}（平常 ${pct(h.base_up, 0)}）</span>`;
+    const updown = lowState.mode === "high" ? `下跌 ${pct(1 - h.up, 0)}（平常 ${pct(1 - h.base_up, 0)}）` : `上漲 ${pct(h.up, 0)}（平常 ${pct(h.base_up, 0)}）`;
+    return `${h.n} 次，平均 <span class="${h.mean >= 0 ? "pos" : "neg"}">${spct(h.mean)}</span><br><span class="muted">平常 ${spct(h.base)}；${updown}</span>`;
   };
   const ruleCell = (r) => {
-    if (!r.rule) return `<span class="muted">—</span>`;
-    const b = r.rule.buy;
-    return `${actChip(r.rule.a, r.rule.side)}${b ? `<br><span class="muted">明日收盤 ${trigCond(b)} 買進（${trigDist(b)}）</span>` : ""}`;
+    const short = lowState.mode === "high" ? (r.short === "ok" ? `<span class="tag">可融券</span>` : r.short === "x" ? `<span class="tag warn-tag">停止融券</span>` : "") : "";
+    if (!r.rule) return short || `<span class="muted">—</span>`;
+    const t = lowState.mode === "high" ? r.rule.sell : r.rule.buy;
+    const what = lowState.mode === "high" ? "賣出" : "買進";
+    return `${actChip(r.rule.a, r.rule.side)}${t ? `<br><span class="muted">明日收盤 ${trigCond(t)} ${what}（${trigDist(t)}）</span>` : ""}${short ? "<br>" + short : ""}`;
   };
   const kindText = (r) => (r.kind === "extra" ? `代表股${r.sector ? "・" + esc(r.sector) : ""}` : r.kind === "etf" ? "ETF" : "0050 成分股");
-  const tags = (r) => r.flags.map((f) => `<span class="tag ${f === "rebound" ? "hot" : f === "k_up" || f === "osc_up" ? "turn" : ""}">${LOW_TAGS[f]}</span>`).join("")
-    + (r.low_days ? `<span class="tag">兩者皆低 ${r.low_days} 天</span>` : "");
+  const tags = (r) => M.tags.filter((f) => r.flags.includes(f)).map((f) => `<span class="tag ${f === M.hot ? (lowState.mode === "high" ? "hot-sell" : "hot") : M.turn.includes(f) ? (lowState.mode === "high" ? "turn-sell" : "turn") : ""}">${LOW_TAGS[f]}</span>`).join("")
+    + (r[M.stuck] >= 3 ? `<span class="tag">${M.stuckText} ${r[M.stuck]} 天</span>` : "")
+    + (r[M.days] ? `<span class="tag">兩者皆${M.word} ${r[M.days]} 天</span>` : "");
+  const extra = (r) => (lowState.mode === "high" ? `DIF ${num(r.dif_pct)}%・MACD 高檔 ${num(r.macd_high, 0)}` : `DIF ${num(r.dif_pct)}%・MACD 低檔 ${num(r.macd_low, 0)}`);
   const body = rows.map((r, i) => `<tr class="clickable" data-code="${r.code}">
     <td class="c-rank">${i + 1}</td>
     <td class="c-name"><a class="link-btn" href="#/stock/${r.code}"><b>${r.code} ${esc(r.name)}</b></a><br><span class="muted">${kindText(r)}</span><br>
       ${fmtPx(r.close)} <span class="${r.chg > 0 ? "pos" : r.chg < 0 ? "neg" : ""}">${spct(r.chg, 2)}</span><div class="tags">${tags(r)}</div></td>
     <td class="c-spark">${sparkSvg(r, L.spark_dates)}</td>
-    <td class="c-score"><span class="score"><b>${num(r.score, 0)}</b><span class="bar" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r.score))}%"></i></span></span>
-      <span class="muted">K ${num(r.k, 0)}・D ${num(r.d, 0)}・J ${num(r.j, 0)}<br>DIF ${num(r.dif_pct)}%・MACD 低檔 ${num(r.macd_low, 0)}</span></td>
-    <td class="c-hist">${histCell(r.hist)}</td>
+    <td class="c-score"><span class="score"><b>${num(r[M.score], 0)}</b><span class="bar ${lowState.mode}" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, r[M.score]))}%"></i></span></span>
+      <span class="muted">K ${num(r.k, 0)}・D ${num(r.d, 0)}・J ${num(r.j, 0)}<br>${extra(r)}</span></td>
+    <td class="c-hist">${histCell(r[M.hist])}</td>
     <td class="c-rule">${ruleCell(r)}</td></tr>`).join("");
-  $("lowTable").innerHTML = `<thead><tr><th>#</th><th>股票</th><th>近 ${L.spark || 60} 個交易日<br><span class="muted">收盤（標出高低點）、KD、MACD</span></th><th>低點分數</th><th>過去同樣低點後 20 日</th><th>你的規則</th></tr></thead>`
+  $("lowTable").innerHTML = `<thead><tr><th>#</th><th>股票</th><th>近 ${L.spark || 60} 個交易日<br><span class="muted">收盤（標出高低點）、KD、MACD</span></th><th>${M.word}點分數</th><th>過去同樣${M.word}點後 20 日</th><th>你的規則${lowState.mode === "high" ? "／融券" : ""}</th></tr></thead>`
     + `<tbody>${body || `<tr><td colspan="6">今天沒有符合這個條件的股票。</td></tr>`}</tbody>`;
   const t = $("lowTable");
   t.onclick = (e) => {
@@ -431,11 +484,12 @@ async function renderLow() {
   t.onmouseleave = hideTip;
 
   const per = [["is", "樣本內 2010–2020"], ["oos", "樣本外 2021–今"]];
-  const cell = (b) => `<td class="${b.ex >= 0 ? "pos" : "neg"}" title="${b.n.toLocaleString()} 個交易日">${spct(b.ex, 2)}</td><td>${pct(b.up, 0)}</td>`;
-  const bandRows = L.bands.is.map((b, i) => `<tr><td>${b.lo}–${Math.round(b.hi)}${b.lo >= 90 ? " 最低點" : ""}</td>${per.map(([p]) => cell(L.bands[p][i])).join("")}</tr>`).join("");
-  const epRow = `<tr class="baseline"><td>剛同時進入低檔</td>${per.map(([p]) => cell(L.episodes[p])).join("")}</tr>`;
-  $("lowBands").innerHTML = `<thead><tr><th rowspan="2">低點分數</th>${per.map(([, t]) => `<th colspan="2">${t}</th>`).join("")}</tr>`
-    + `<tr>${per.map(([p]) => `<th>20 日超額</th><th>上漲比例<br><span class="muted">平常 ${pct(L.episodes[p].base_up, 0)}</span></th>`).join("")}</tr></thead>`
+  const high = lowState.mode === "high", B = L[M.bands], E = L[M.episodes];
+  const cell = (b) => `<td class="${b.ex >= 0 ? "pos" : "neg"}" title="${b.n.toLocaleString()} 個交易日">${spct(b.ex, 2)}</td><td>${pct(high ? 1 - b.up : b.up, 0)}</td>`;
+  const bandRows = B.is.map((b, i) => `<tr><td>${b.lo}–${Math.round(b.hi)}${b.lo >= 90 ? ` 最${M.word}點` : ""}</td>${per.map(([p]) => cell(B[p][i])).join("")}</tr>`).join("");
+  const epRow = `<tr class="baseline"><td>${M.epText}</td>${per.map(([p]) => cell(E[p])).join("")}</tr>`;
+  $("lowBands").innerHTML = `<thead><tr><th rowspan="2">${M.word}點分數</th>${per.map(([, t]) => `<th colspan="2">${t}</th>`).join("")}</tr>`
+    + `<tr>${per.map(([p]) => `<th>20 日超額</th><th>${high ? "下跌" : "上漲"}比例<br><span class="muted">平常 ${pct(high ? 1 - E[p].base_up : E[p].base_up, 0)}</span></th>`).join("")}</tr></thead>`
     + `<tbody>${bandRows}${epRow}</tbody>`;
 }
 
@@ -645,6 +699,14 @@ const LAB_PRESETS = [
   { name: "MACD 黃金交叉買、死亡交叉賣", buy: { mode: "all", within: 1, conds: [{ id: "macd_golden" }] }, sell: { mode: "all", within: 1, conds: [{ id: "macd_dead" }] } },
   { name: "規則搜尋第一名（6,930 條中樣本內最佳）", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "zone_neg" }] },
     sell: { mode: "all", within: 1, conds: [{ id: "j_above", v: 100 }, { id: "osc_down" }] } },
+  { name: "同步翻揚買、高檔鈍化結束且 DIF 轉弱才賣（10% 停損）", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "osc_up" }, { id: "zone_neg" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "high_stuck_end", v: 80, n: 3 }, { id: "dif_down" }] }, stop: 10 },
+  { name: "同步翻揚買；同步轉弱或「K 回到前高、股價沒過前高」就賣", buy: { mode: "all", within: 1, conds: [{ id: "k_up" }, { id: "osc_up" }, { id: "zone_neg" }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "k_down" }, { id: "osc_down" }, { id: "zone_pos" }], or: [{ mode: "all", within: 1, conds: [{ id: "kd_top_div_hidden", n: 30 }] }] }, stop: 10 },
+  { name: "KD 底背離買、MACD 頂背離賣（12% 移動停損）", buy: { mode: "all", within: 1, conds: [{ id: "kd_bot_div", n: 30 }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "dif_top_div", n: 30 }] }, trail: 12 },
+  { name: "低檔鈍化結束才買、高檔鈍化結束才賣", buy: { mode: "all", within: 1, conds: [{ id: "low_stuck_end", v: 20, n: 3 }] },
+    sell: { mode: "all", within: 1, conds: [{ id: "high_stuck_end", v: 80, n: 3 }] } },
   { name: "KD 低檔黃金交叉＋MACD 翻揚＋季線上揚（12% 移動停損）", buy: { mode: "all", within: 3, conds: [{ id: "kd_golden" }, { id: "k_below", v: 30 }, { id: "osc_up" }, { id: "ma_rising", n: 60 }] },
     sell: { mode: "all", within: 1, conds: [{ id: "kd_dead" }, { id: "k_above", v: 70 }] }, trail: 12 },
 ];
@@ -682,36 +744,57 @@ function condOptions(selected) {
     `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.label.replace(/\{v\}/g, "數值").replace(/\{n\}/g, "N"))}</option>`).join("")}</optgroup>`).join("");
 }
 
-function renderLabSide(which) {
-  const box = $(which === "buy" ? "labBuy" : "labSell"), side = (labState.rule[which] ??= { mode: "all", within: 1, conds: [] });
-  side.conds ??= [];
+// One condition group (the side itself, or one of its "or" alternatives) rendered into `el`.
+function renderLabGroup(el, group, which, rerender, onRemove) {
+  group.conds ??= [];
   const cat = catalog();
-  const rows = side.conds.map((c, i) => {
+  const pLabel = (p, spec) => (p === "v" ? "門檻值" : spec.group === "背離" ? "前高／前低回看天數" : spec.group === "鈍化" ? "連續天數" : "均線天數");
+  const rows = group.conds.map((c, i) => {
     const spec = cat.byId[c.id], params = Object.entries(spec?.params || {});
     return `<li><select data-i="${i}" data-f="id" aria-label="條件">${condOptions(c.id)}</select>${params.map(([p, ps]) =>
-      `<input type="number" data-i="${i}" data-f="${p}" value="${c[p] ?? ps.default}" min="${ps.min}" max="${ps.max}" step="1" aria-label="${p === "n" ? "天數" : "數值"}" title="${p === "n" ? "均線天數" : "門檻值"}">`).join("")}<button type="button" class="icon-btn" data-del="${i}" aria-label="刪除條件">✕</button></li>`;
+      `<input type="number" data-i="${i}" data-f="${p}" value="${c[p] ?? ps.default}" min="${ps.min}" max="${ps.max}" step="1" aria-label="${pLabel(p, spec)}" title="${pLabel(p, spec)}">`).join("")}<button type="button" class="icon-btn" data-del="${i}" aria-label="刪除條件">✕</button></li>`;
   }).join("");
-  box.innerHTML = `<h3>${which === "buy" ? "買進條件" : "賣出條件"}</h3>
-    <div class="lab-row"><div class="seg" data-mode role="group" aria-label="條件組合"></div>
-    ${(side.mode || "all") === "all" ? `<label class="field">時間窗<select data-within>${[1, 2, 3, 5, 10].map((w) => `<option value="${w}" ${w === (side.within || 1) ? "selected" : ""}>${w === 1 ? "同一根K棒" : `${w} 根K棒內`}</option>`).join("")}</select></label>` : ""}</div>
+  el.innerHTML = `<div class="lab-row"><div class="seg" data-mode role="group" aria-label="條件組合"></div>
+    ${(group.mode || "all") === "all" ? `<label class="field">時間窗<select data-within>${[1, 2, 3, 5, 10].map((w) => `<option value="${w}" ${w === (group.within || 1) ? "selected" : ""}>${w === 1 ? "同一根K棒" : `${w} 根K棒內`}</option>`).join("")}</select></label>` : ""}
+    ${onRemove ? `<button type="button" class="btn" data-remove>移除這一組</button>` : ""}</div>
     <ol class="cond-list">${rows || `<li class="muted">${which === "sell" ? "沒有賣出條件：只靠右邊的停損、停利出場" : "沒有買進條件：不會進場"}</li>`}</ol>
     <button type="button" class="btn" data-add>＋ 新增條件</button>`;
-  seg(box.querySelector("[data-mode]"), [["all", "全部符合"], ["any", "任一符合"]], side.mode || "all", (v) => { side.mode = v; renderLabSide(which); labChanged(); });
-  box.querySelector("[data-within]")?.addEventListener("change", (e) => { side.within = +e.target.value; labChanged(); });
-  box.querySelector("[data-add]").onclick = () => { side.conds.push({ id: which === "buy" ? "k_up" : "k_down" }); renderLabSide(which); labChanged(); };
-  box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { side.conds.splice(+b.dataset.del, 1); renderLabSide(which); labChanged(); }));
-  box.querySelectorAll("[data-f]").forEach((el) => (el.onchange = () => {
-    const c = side.conds[+el.dataset.i], f = el.dataset.f;
+  seg(el.querySelector("[data-mode]"), [["all", "全部符合"], ["any", "任一符合"]], group.mode || "all", (v) => { group.mode = v; rerender(); labChanged(); });
+  el.querySelector("[data-within]")?.addEventListener("change", (e) => { group.within = +e.target.value; labChanged(); });
+  el.querySelector("[data-remove]")?.addEventListener("click", () => { onRemove(); rerender(); labChanged(); });
+  el.querySelector("[data-add]").onclick = () => { group.conds.push({ id: which === "buy" ? "k_up" : "k_down" }); rerender(); labChanged(); };
+  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { group.conds.splice(+b.dataset.del, 1); rerender(); labChanged(); }));
+  el.querySelectorAll("[data-f]").forEach((inp) => (inp.onchange = () => {
+    const c = group.conds[+inp.dataset.i], f = inp.dataset.f;
     if (f === "id") {
-      side.conds[+el.dataset.i] = { id: el.value };
-      renderLabSide(which);
+      group.conds[+inp.dataset.i] = { id: inp.value };
+      rerender();
     } else {
       const ps = cat.byId[c.id].params[f];
-      c[f] = Math.min(ps.max, Math.max(ps.min, Number(el.value) || ps.default));
-      el.value = c[f];
+      c[f] = Math.min(ps.max, Math.max(ps.min, Number(inp.value) || ps.default));
+      inp.value = c[f];
     }
     labChanged();
   }));
+}
+
+function renderLabSide(which) {
+  const box = $(which === "buy" ? "labBuy" : "labSell"), side = (labState.rule[which] ??= { mode: "all", within: 1, conds: [] });
+  const rerender = () => renderLabSide(which);
+  const alts = side.or || [];
+  box.innerHTML = `<h3>${which === "buy" ? "買進條件" : "賣出條件"}</h3><div data-g="main"></div>
+    ${alts.map((_, i) => `<div class="or-sep">或</div><div data-g="${i}"></div>`).join("")}
+    ${alts.length < 2 ? `<button type="button" class="btn subtle" data-or>＋ 或另一組條件（任一組成立就${which === "buy" ? "買進" : "賣出"}）</button>` : ""}`;
+  renderLabGroup(box.querySelector('[data-g="main"]'), side, which, rerender, null);
+  alts.forEach((g, i) => renderLabGroup(box.querySelector(`[data-g="${i}"]`), g, which, rerender, () => {
+    side.or.splice(i, 1);
+    if (!side.or.length) delete side.or;
+  }));
+  box.querySelector("[data-or]")?.addEventListener("click", () => {
+    (side.or ??= []).push({ mode: "all", within: 1, conds: [{ id: which === "buy" ? "kd_bot_div" : "kd_top_div_hidden" }] });
+    rerender();
+    labChanged();
+  });
 }
 
 function renderLabRisk() {

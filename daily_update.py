@@ -7,8 +7,8 @@
   python daily_update.py --fast           # keep the KDJ+MACD+DL positions (skips retraining the MLP, ~2 minutes)
 
 Run after 14:30 Taipei (bars dated today are dropped before that). Yahoo can lag a day; stocklab.data.top_up fills
-the gap from the exchange quotes on FinMind (about 120 requests on a day Yahoo lags, well under FinMind's ~300 an
-hour without an account).
+the gap from the exchange quotes on FinMind; with the short-sale notes that is about 230 requests on a day Yahoo lags,
+under FinMind's ~300 an hour without an account.
 """
 
 import argparse
@@ -23,7 +23,7 @@ DL_FAMILIES = {"kdj_macd_dl"}
 
 
 def stage_data():
-    from stocklab import data, etf, macro
+    from stocklab import data, etf, macro, shortrules
     from stocklab import external as ext
 
     data.download(data.ALL_CODES)
@@ -35,6 +35,7 @@ def stage_data():
     if stale:
         print(f"  still behind {latest.date()}: {stale}", flush=True)
     etf.download_etfs(refresh=True)
+    shortrules.update_notes(data.ALL_CODES + etf.CODES)  # 停止融券 notes for the sell / short view
     macro.download_policy(refresh=True)
 
 

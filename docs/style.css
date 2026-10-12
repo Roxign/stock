@@ -313,6 +313,11 @@ table.data.low .c-hist, table.data.low .c-rule { font-size: 12px; line-height: 1
 .tag { display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; color: var(--ink-2); background: var(--surface-2); }
 .tag.hot { color: #fff; background: var(--up); font-weight: 600; }
 .tag.turn { color: var(--up); background: color-mix(in oklab, var(--up) 12%, transparent); }
+.tag.hot-sell { color: #fff; background: var(--down); font-weight: 600; }
+.tag.turn-sell { color: var(--down); background: color-mix(in oklab, var(--down) 12%, transparent); }
+.tag.warn-tag { color: var(--s4); background: color-mix(in oklab, var(--s4) 14%, transparent); }
+.bar.high i { background: var(--s2); }
+.seg { flex-wrap: wrap; }
 svg.spark { display: block; overflow: visible; }
 svg.spark .sp-line { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
 svg.spark .sp-area { fill: var(--ink-2); opacity: 0.08; }
@@ -365,6 +370,9 @@ table.data.bands th, table.data.bands td { white-space: normal; }
 .lab-risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
 .lab-risk-grid input { width: 100%; }
 .lab-desc { line-height: 1.6; }
+.or-sep { margin: 10px 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.or-sep::before, .or-sep::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }
+.btn.subtle { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
 .btn:disabled { opacity: 0.5; cursor: progress; }

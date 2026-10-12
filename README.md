@@ -1,19 +1,19 @@
 # 台灣50 策略實驗室：KDJ／MACD
 
 **網頁檢視器：<https://roxign.github.io/stock/>**（手機、電腦皆可）
-- [低點排行](https://roxign.github.io/stock/#/low)（首頁）：每天收盤後，依 KDJ 與 MACD 有多低排序 50 檔、另 55 檔代表股與 ETF，附狀態標籤、你的「同步翻揚」買點與觸發價，以及歷史上同樣低點之後的表現
+- [高低點排行](https://roxign.github.io/stock/#/low)（首頁）：每天收盤後，依 KDJ 與 MACD 有多低（買點）或多高（賣點・做空）排序 50 檔、另 55 檔代表股與 ETF，附 60 日走勢縮圖、背離與鈍化標籤、你的規則的買賣觸發價、能否融券，以及歷史上同樣高低點之後的表現
 - [今日訊號](https://roxign.github.io/stock/#/signals)：每個策略在最新收盤後的買賣決定（下一個交易日開盤執行）、明日收盤的觸發價（目標價）、匯率與利差風險提示、各策略過去買賣點的準確度
 - [個股回測](https://roxign.github.io/stock/#/stock/2330)：選一檔股票，看歷史買賣點、當日訊號、觸發價線與各策略績效
 - [規則實驗室](https://roxign.github.io/stock/#/lab)：自己組合 KDJ／MACD／均線的買進、賣出條件與停損，馬上在每一檔股票上回測、看交叉驗證，並匯出 MultiCharts 程式碼
 
 以元大台灣50（0050）的 50 檔成分股、另外 55 檔代表股（開發時沒用過的股票，用來檢驗策略），以及 0050、黃金（00635U）、石油（00642U）、美債 20 年（00679B）ETF 為對象，研究以 **KDJ 與 MACD** 為核心的交易策略，並與「買進持有（什麼都不做）」和「定期定額」比較。策略最終目標平台是 **MultiCharts**：規則型策略附 PowerLanguage 程式碼；回測則以 Python 進行，結果發佈到上面的網頁（原始檔在 `docs/`）。
 
-**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)；低點排行榜：[research/low_points.md](research/low_points.md)；買賣訊號與通知：[research/signals.md](research/signals.md)；匯率與利差：[research/macro_fx_rates.md](research/macro_fx_rates.md)
+**先讀這份**：[為什麼策略贏不了買進持有？——問題診斷與改進](research/diagnosis.md)；高低點排行榜：[research/low_points.md](research/low_points.md)；指標背離與高低檔鈍化：[research/divergence_saturation.md](research/divergence_saturation.md)；買賣訊號與通知：[research/signals.md](research/signals.md)；匯率與利差：[research/macro_fx_rates.md](research/macro_fx_rates.md)
 
 - 策略（各自在 `strategies/<方向>/`，內含 `RESEARCH.md` 研究筆記與 `multicharts/` 程式碼）
   - `kdj_macd_rebound` — 你的規則：KDJ 與 MACD 在零軸下同步翻揚買進、零軸上同步轉弱賣出（10% 停損）；以及「MACD 死叉才賣」版本
   - `kdj_macd_rule` — MACD 趨勢＋KDJ 三線超賣反彈
-  - `kdj_macd_lab` — 規則實驗室：規則引擎（`stocklab/rules.py`，網頁版 `docs/rules.js`）、6,930 條 KDJ＋MACD 規則的系統搜尋（`search.py`）；`rules.json` 內的規則會成為正式策略（目前是搜尋第一名，當作對照組）
+  - `kdj_macd_lab` — 規則實驗室：規則引擎（`stocklab/rules.py`，網頁版 `docs/rules.js`）、6,930 條 KDJ＋MACD 規則的系統搜尋（`search.py`）、背離與鈍化研究（`divergence_study.py`）；`rules.json` 內的規則會成為正式策略（目前是「同步翻揚買、高檔鈍化結束且 DIF 轉弱才賣」與搜尋第一名對照組）
   - `kdj_macd_dl` — KDJ＋MACD＋小型深度學習（MLP）半倉底倉版
 - 2026-10-12 瘦身：移除了趨勢追蹤、均值回歸、多空與跨資產、深度學習第二輪等非 KDJ／MACD 的策略。完整版本保留在 git 標籤 `all-strategies-2026-10-12`（`git checkout all-strategies-2026-10-12` 可取回），當時的比較結果見 `research/signals.md`、`research/diagnosis.md`。
 

@@ -20,6 +20,23 @@ const prev = (x, n = 1) => {
 const map2 = (a, b, f) => { const out = new Uint8Array(a.length); for (let i = 0; i < a.length; i++) out[i] = f(a[i], b[i], i) ? 1 : 0; return out; };
 const turn = (x, up) => { const x1 = prev(x), x2 = prev(x, 2); return map2(x, x1, (v, v1, i) => (up ? v > v1 && v1 <= x2[i] : v < v1 && v1 >= x2[i])); };
 const cross = (a, b, up) => { const a1 = prev(a), b1 = prev(b); return map2(a, b, (v, w, i) => (up ? v > w && a1[i] <= b1[i] : v < w && a1[i] >= b1[i])); };
+const GAP = 5; // the "previous high / low" of the divergence conditions ends this many bars ago
+function prevExt(x, n, high) {
+  const out = new Float64Array(x.length).fill(NaN);
+  for (let t = n - 1 + GAP; t < x.length; t++) {
+    let v = high ? -Infinity : Infinity;
+    for (let i = t - GAP - n + 1; i <= t - GAP; i++) v = high ? Math.max(v, x[i]) : Math.min(v, x[i]);
+    out[t] = v;
+  }
+  return out;
+}
+function streak(mask) {
+  const out = new Float64Array(mask.length);
+  let run = 0;
+  for (let i = 0; i < mask.length; i++) { run = mask[i] ? run + 1 : 0; out[i] = run; }
+  return out;
+}
+const DIVERGENCES = new Set(["kd_top_div", "kd_top_div_hidden", "kd_bot_div", "kd_bot_div_hidden", "dif_top_div", "dif_top_div_hidden", "dif_bot_div", "dif_bot_div_hidden"]);
 const cmp = (x, f) => { const out = new Uint8Array(x.length); for (let i = 0; i < x.length; i++) out[i] = f(x[i], i) ? 1 : 0; return out; };
 
 export function indicators(stock, kdjN = 9, mp = [12, 26, 9]) {
@@ -66,7 +83,21 @@ export function condition(ind, c) {
       const m = ind.ma(param(c, "n")), m1 = prev(m);
       return id === "ma_rising" ? map2(m, m1, (a, b) => a > b) : map2(m, m1, (a, b) => a < b);
     }
-    default: throw new Error(`unknown condition ${id}`);
+    case "k_high_stuck": case "high_stuck_end": case "k_low_stuck": case "low_stuck_end": {
+      const v = param(c, "v"), n = param(c, "n"), high = id === "k_high_stuck" || id === "high_stuck_end";
+      const st = streak(cmp(k, (a) => (high ? a > v : a < v)));
+      if (id.endsWith("stuck")) return cmp(st, (a) => a >= n);
+      const s1 = prev(st);
+      return cmp(k, (a, i) => (high ? a <= v : a >= v) && s1[i] >= n);
+    }
+    default: {
+      if (!DIVERGENCES.has(id)) throw new Error(`unknown condition ${id}`);
+      const x = id.startsWith("kd") ? k : dif, n = param(c, "n"), top = id.includes("_top_");
+      const px = prevExt(close, n, top), ix = prevExt(x, n, top), hidden = id.endsWith("hidden");
+      return cmp(x, (a, i) => (top
+        ? (hidden ? a >= ix[i] && close[i] < px[i] : close[i] > px[i] && a < ix[i])
+        : (hidden ? a <= ix[i] && close[i] > px[i] : close[i] < px[i] && a > ix[i])));
+    }
   }
 }
 
@@ -79,6 +110,15 @@ function recent(a, w) {
 }
 
 export function sideSignal(ind, side, n) {
+  const out = groupSignal(ind, side, n);
+  for (const alt of side?.or || []) {
+    const a = groupSignal(ind, alt, n);
+    for (let i = 0; i < n; i++) out[i] |= a[i];
+  }
+  return out;
+}
+
+function groupSignal(ind, side, n) {
   const conds = side?.conds || [];
   const out = new Uint8Array(n);
   if (!conds.length) return out;
@@ -127,12 +167,16 @@ export function condText(c) {
 }
 
 export function describe(rule) {
-  const side = (s, what) => {
-    const conds = s?.conds || [];
-    if (!conds.length) return what === "賣出" ? "賣出：無（只靠出場保護）" : "買進：無";
-    if ((s.mode || "all") === "any") return `${what}：任一符合 — ${conds.map(condText).join("、")}`;
+  const group = (s) => {
+    const conds = s.conds || [];
+    if ((s.mode || "all") === "any") return `任一符合 — ${conds.map(condText).join("、")}`;
     const w = Math.floor(s.within || 1);
-    return `${what}：${w === 1 ? "同一根K棒全部符合" : `最近 ${w} 根K棒內都出現過`} — ${conds.map(condText).join("、")}`;
+    return `${w === 1 ? "同一根K棒全部符合" : `最近 ${w} 根K棒內都出現過`} — ${conds.map(condText).join("、")}`;
+  };
+  const side = (s, what) => {
+    const groups = [s || {}, ...(s?.or || [])].filter((g) => g.conds?.length);
+    if (!groups.length) return what === "賣出" ? "賣出：無（只靠出場保護）" : "買進：無";
+    return `${what}：${groups.map(group).join("；或 ")}`;
   };
   const risk = [["stop", "收盤停損"], ["take", "收盤停利"], ["trail", "移動停損"]].filter(([k]) => rule[k]).map(([k, l]) => `${l} ${rule[k]}%`);
   if (rule.hold) risk.push(`最多持有 ${rule.hold} 天`);
@@ -163,14 +207,19 @@ const plCond = (c) => {
 export function powerLanguage(rule) {
   const mp = rule.macd || [12, 26, 9];
   const vars = [];
-  const sideCode = (s, name, prefix) => {
-    const conds = s?.conds || [];
-    if (!conds.length) return `${name} = false;`;
+  const groupCode = (g, prefix) => {
+    const conds = g.conds || [];
     const lines = conds.map((c, i) => { vars.push(`${prefix}${i + 1}(false)`); return `${prefix}${i + 1} = ${plCond(c)};  { ${condText(c)} }`; });
-    const w = Math.floor(s.within || 1);
+    const w = Math.floor(g.within || 1);
     const names = conds.map((_, i) => `${prefix}${i + 1}`);
-    const expr = (s.mode || "all") === "any" ? names.join(" or ") : w === 1 ? names.join(" and ") : names.map((v) => `CountIF(${v}, ${w}) > 0`).join(" and ");
-    return lines.join("\n") + `\n${name} = ${expr};`;
+    const expr = (g.mode || "all") === "any" ? names.join(" or ") : w === 1 ? names.join(" and ") : names.map((v) => `CountIF(${v}, ${w}) > 0`).join(" and ");
+    return { lines, expr: `(${expr})` };
+  };
+  const sideCode = (s, name, prefix) => {
+    const groups = [s || {}, ...(s?.or || [])].filter((g) => g.conds?.length);
+    if (!groups.length) return `${name} = false;`;
+    const parts = groups.map((g, gi) => groupCode(g, gi ? `${prefix}${String.fromCharCode(96 + gi)}` : prefix));
+    return parts.flatMap((p) => p.lines).join("\n") + `\n${name} = ${parts.map((p) => p.expr).join(" or ")};`;
   };
   const buyCode = sideCode(rule.buy, "buySig", "b"), sellCode = sideCode(rule.sell, "sellSig", "s");
   return `{ ================================================================================
