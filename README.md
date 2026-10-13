@@ -16,7 +16,7 @@
   - `kdj_macd_rule` — MACD 趨勢＋KDJ 三線超賣反彈
   - `kdj_macd_lab` — 規則實驗室：規則引擎（`stocklab/rules.py`，網頁版 `docs/rules.js`）、6,930 條 KDJ＋MACD 規則的系統搜尋（`search.py`）、背離與鈍化研究（`divergence_study.py`）；`rules.json` 內的規則會成為正式策略（目前是「同步翻揚買、高檔鈍化結束且 DIF 轉弱才賣」與搜尋第一名對照組）
   - `kdj_macd_dl` — KDJ＋MACD＋小型深度學習（MLP）半倉底倉版
-  - `rl` — 強化學習研究（不是正式策略，沒有 `strategy.py`）：PPO、直接強化學習、FQI、模仿完美交易者、跨股配置、跨市場與槓桿，加上瓶頸診斷（需要多準、實際多準、手續費、夜間報酬、倖存者偏差）；結論見 `research/rl_bottleneck.md`
+  - `rl` — 強化學習研究（不是正式策略，沒有 `strategy.py`）：PPO、直接強化學習、FQI、模仿完美交易者、跨股配置、跨市場與槓桿，加上瓶頸診斷（需要多準、實際多準、手續費、夜間報酬、倖存者偏差），以及用含下市股的全部上市股票驗證跨股動能（`fulluniverse.py`、`momentum_full.py`）；結論見 `research/rl_bottleneck.md`
 - 2026-10-12 瘦身：移除了趨勢追蹤、均值回歸、多空與跨資產、深度學習第二輪等非 KDJ／MACD 的策略。完整版本保留在 git 標籤 `all-strategies-2026-10-12`（`git checkout all-strategies-2026-10-12` 可取回），當時的比較結果見 `research/signals.md`、`research/diagnosis.md`。
 
 ## 回測方法
