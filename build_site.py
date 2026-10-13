@@ -29,7 +29,7 @@ FOLDS = cv.FOLDS
 # Leaderboards per universe. The ETFs stay in the data (stock pages, rule lab, low-point ranking) but no published
 # strategy trades them since the 2026-10-12 slim-down, so they get no leaderboard.
 UNIVERSES = {"stocks": ("股票（50 檔）", STOCK_CODES), "extra": ("代表股（另 55 檔）", EXTRA_CODES)}
-DOCS_COPIED = ("diagnosis.md", "macro_fx_rates.md", "signals.md", "low_points.md", "divergence_saturation.md", "rl_bottleneck.md")
+DOCS_COPIED = ("diagnosis.md", "macro_fx_rates.md", "signals.md", "low_points.md", "divergence_saturation.md", "rl_bottleneck.md", "attention_disposition.md")
 
 
 def latest_block(sid, board, cv_rows, cv_meta, extra_board=None, data_end=None):
