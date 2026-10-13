@@ -9,3 +9,4 @@ exports/
 data/lab_search.json
 data/lab_search_all.csv
 data/divergence_study.json
+data/rl/
